@@ -36,28 +36,90 @@ def load_dotenv_file(path: str = ".env"):
 load_dotenv_file()
 
 
+def normalize_base_url(value: str, default: str):
+    clean = (value or "").strip().rstrip("/")
+    if not clean:
+        return default.rstrip("/")
+    if clean.startswith("//"):
+        return f"https:{clean}".rstrip("/")
+    if "://" not in clean:
+        return f"https://{clean}".rstrip("/")
+    return clean
+
+
+def load_json_object_env(name: str):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key).strip().lower(): str(value).strip() for key, value in data.items() if str(value).strip()}
+
+
+def load_float_env(name: str, default: float):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def load_int_env(name: str, default: int):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 APP_NAME = "FileSync Pro"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 USE_POSTGRES = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
 DB_PATH = Path(os.getenv("FILESYNC_PRO_DB", "filesync_pro.db"))
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "")
 MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "")
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
-SITE_BASE_URL = os.getenv("FILESYNC_PRO_SITE_URL", PUBLIC_BASE_URL).rstrip("/")
-PRICE_AMOUNT = float(os.getenv("FILESYNC_PRO_PRICE", "49.99"))
+PRICE_AMOUNT = load_float_env("FILESYNC_PRO_PRICE", 49.99)
 PRICE_CURRENCY = os.getenv("FILESYNC_PRO_CURRENCY", "COP")
-LICENSE_ACTIVATIONS = int(os.getenv("FILESYNC_PRO_MAX_ACTIVATIONS", "2"))
+LICENSE_ACTIVATIONS = load_int_env("FILESYNC_PRO_MAX_ACTIVATIONS", 2)
+MP_SUBSCRIPTION_PLAN_MAP = load_json_object_env("MP_SUBSCRIPTION_PLAN_MAP")
+MP_SUBSCRIPTION_LINK_MAP = load_json_object_env("MP_SUBSCRIPTION_LINK_MAP")
+DEFAULT_SUBSCRIPTION_PLAN_CODE = os.getenv("FILESYNC_PRO_DEFAULT_PLAN_CODE", "basica").strip().lower() or "basica"
+SUBSCRIPTION_ACTIVE_STATUSES = {"authorized", "active"}
 
 
 class CheckoutRequest(BaseModel):
     email: EmailStr
-    plan_code: str = "pro_lifetime"
+    plan_code: str = DEFAULT_SUBSCRIPTION_PLAN_CODE
 
 
 class LicenseRequest(BaseModel):
     email: EmailStr
     license_key: str
     device_id: str
+
+
+class SubscriptionCheckoutRequest(BaseModel):
+    email: EmailStr
+    plan_code: str = DEFAULT_SUBSCRIPTION_PLAN_CODE
+    external_reference: str = ""
+
+
+class SubscriptionLinkRequest(BaseModel):
+    email: EmailStr
+    plan_code: str = DEFAULT_SUBSCRIPTION_PLAN_CODE
+
+
+class SubscriptionLookupRequest(BaseModel):
+    email: EmailStr
+    plan_code: str = DEFAULT_SUBSCRIPTION_PLAN_CODE
 
 
 app = FastAPI(title="FileSync Pro Licensing API")
@@ -77,6 +139,27 @@ def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def table_columns(conn, table_name: str):
+    if USE_POSTGRES:
+        rows = conn.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = %s
+            """,
+            (table_name,),
+        ).fetchall()
+        return {row["column_name"] if isinstance(row, dict) else row[0] for row in rows}
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def ensure_column(conn, table_name: str, column_name: str, definition: str):
+    if column_name in table_columns(conn, table_name):
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def init_db():
@@ -108,9 +191,29 @@ def init_db():
             updated_at TEXT NOT NULL
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            subscription_id TEXT PRIMARY KEY,
+            external_reference TEXT NOT NULL,
+            email TEXT NOT NULL,
+            plan_code TEXT NOT NULL,
+            plan_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            init_point TEXT,
+            payer_id TEXT,
+            next_payment_date TEXT,
+            last_payment_id TEXT,
+            license_key TEXT,
+            details_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
     ]
     for statement in statements:
         conn.execute(statement)
+    ensure_column(conn, "licenses", "subscription_id", "TEXT")
     conn.commit()
     conn.close()
 
@@ -125,6 +228,10 @@ def escape(value):
 
 def new_license_key():
     return f"FSP-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}"
+
+
+def subscription_grants_access(status: str):
+    return (status or "").strip().lower() in SUBSCRIPTION_ACTIVE_STATUSES
 
 
 def render_page(title: str, body: str):
@@ -372,6 +479,25 @@ def mp_headers():
     return {"Authorization": f"Bearer {MP_ACCESS_TOKEN}", "Content-Type": "application/json"}
 
 
+def mp_request(method: str, url: str, payload=None, params=None):
+    headers = mp_headers()
+    if method.upper() in {"POST", "PUT", "PATCH"}:
+        headers = {**headers, "X-Idempotency-Key": uuid.uuid4().hex}
+    response = requests.request(
+        method=method.upper(),
+        url=url,
+        headers=headers,
+        data=json.dumps(payload) if payload is not None else None,
+        params=params,
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Mercado Pago devolvio {response.status_code}: {response.text}")
+    if not response.text.strip():
+        return {}
+    return response.json()
+
+
 def create_mp_preference(order_id: str, email: str, plan_code: str):
     payload = {
         "items": [
@@ -394,15 +520,7 @@ def create_mp_preference(order_id: str, email: str, plan_code: str):
         "auto_return": "approved",
         "external_reference": order_id,
     }
-    response = requests.post(
-        "https://api.mercadopago.com/checkout/preferences",
-        headers=mp_headers(),
-        data=json.dumps(payload),
-        timeout=30,
-    )
-    if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"Mercado Pago devolvio {response.status_code}: {response.text}")
-    return response.json()
+    return mp_request("POST", "https://api.mercadopago.com/checkout/preferences", payload)
 
 
 def fetch_order(order_id: str):
@@ -412,7 +530,84 @@ def fetch_order(order_id: str):
     return row
 
 
-def create_checkout_order(email: str, plan_code: str = "pro_lifetime"):
+def fetch_subscription(subscription_id: str):
+    conn = db()
+    row = conn.execute(sql("SELECT * FROM subscriptions WHERE subscription_id = ?"), (subscription_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def fetch_subscription_by_external_reference(external_reference: str):
+    conn = db()
+    row = conn.execute(
+        sql("SELECT * FROM subscriptions WHERE external_reference = ?"),
+        (external_reference,),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def fetch_order_for_license(row):
+    order_id = row["order_id"] if row and row["order_id"] else ""
+    if not order_id:
+        return None
+    return fetch_order(order_id)
+
+
+def resolve_subscription_plan(plan_code: str):
+    normalized = (plan_code or DEFAULT_SUBSCRIPTION_PLAN_CODE).strip().lower()
+    env_plan_id = os.getenv(f"MP_SUBSCRIPTION_PLAN_ID_{normalized.upper()}", "").strip()
+    plan_id = MP_SUBSCRIPTION_PLAN_MAP.get(normalized) or env_plan_id
+    if not plan_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No existe un plan configurado para '{normalized}'. "
+                "Define MP_SUBSCRIPTION_PLAN_MAP o MP_SUBSCRIPTION_PLAN_ID_<PLAN_CODE>."
+            ),
+        )
+    return normalized, plan_id
+
+
+def resolve_subscription_link(plan_code: str):
+    normalized = (plan_code or DEFAULT_SUBSCRIPTION_PLAN_CODE).strip().lower()
+    env_link = os.getenv(f"MP_SUBSCRIPTION_LINK_{normalized.upper()}", "").strip()
+    checkout_url = MP_SUBSCRIPTION_LINK_MAP.get(normalized) or env_link
+    if not checkout_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No existe un link configurado para '{normalized}'. "
+                "Define MP_SUBSCRIPTION_LINK_MAP o MP_SUBSCRIPTION_LINK_<PLAN_CODE>."
+            ),
+        )
+    return normalized, checkout_url
+
+
+def resolve_subscription_checkout_config(plan_code: str):
+    normalized, plan_id = resolve_subscription_plan(plan_code)
+    _, checkout_url = resolve_subscription_link(normalized)
+    return normalized, plan_id, checkout_url
+
+
+def build_subscription_reason(plan_code: str):
+    return f"{APP_NAME} suscripcion {plan_code.replace('_', ' ')}".strip()
+
+
+def create_mp_subscription(email: str, plan_code: str, external_reference: str):
+    normalized_plan_code, plan_id = resolve_subscription_plan(plan_code)
+    payload = {
+        "preapproval_plan_id": plan_id,
+        "reason": build_subscription_reason(normalized_plan_code),
+        "external_reference": external_reference,
+        "payer_email": email,
+        "back_url": f"{SITE_BASE_URL}/subscriptions/return",
+        "status": "pending",
+    }
+    return normalized_plan_code, plan_id, mp_request("POST", "https://api.mercadopago.com/preapproval", payload)
+
+
+def create_checkout_order(email: str, plan_code: str = DEFAULT_SUBSCRIPTION_PLAN_CODE):
     order_id = uuid.uuid4().hex
     now = utc_now()
     conn = db()
@@ -443,14 +638,22 @@ def create_checkout_order(email: str, plan_code: str = "pro_lifetime"):
 
 
 def get_payment(payment_id: str):
-    response = requests.get(
-        f"https://api.mercadopago.com/v1/payments/{payment_id}",
-        headers=mp_headers(),
-        timeout=30,
-    )
-    if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"No se pudo consultar el pago: {response.text}")
-    return response.json()
+    return mp_request("GET", f"https://api.mercadopago.com/v1/payments/{payment_id}")
+
+
+def get_subscription(subscription_id: str):
+    return mp_request("GET", f"https://api.mercadopago.com/preapproval/{subscription_id}")
+
+
+def get_authorized_payment(authorized_payment_id: str):
+    return mp_request("GET", f"https://api.mercadopago.com/authorized_payments/{authorized_payment_id}")
+
+
+def search_subscriptions(payer_email: str, plan_id: str = ""):
+    params = {"payer_email": payer_email}
+    if plan_id:
+        params["preapproval_plan_id"] = plan_id
+    return mp_request("GET", "https://api.mercadopago.com/preapproval/search", params=params)
 
 
 def validate_webhook_signature(x_signature: str, x_request_id: str, data_id: str):
@@ -494,6 +697,215 @@ def ensure_license_for_paid_order(order_id: str, email: str):
     conn.commit()
     conn.close()
     return license_key
+
+
+def sync_license_with_subscription(subscription_id: str, email: str, status: str):
+    if not subscription_id or not email:
+        return None
+
+    conn = db()
+    row = conn.execute(sql("SELECT * FROM licenses WHERE subscription_id = ?"), (subscription_id,)).fetchone()
+    now = utc_now()
+    desired_status = "active" if subscription_grants_access(status) else "inactive"
+
+    if row:
+        conn.execute(
+            sql("UPDATE licenses SET status = ?, updated_at = ? WHERE subscription_id = ?"),
+            (desired_status, now, subscription_id),
+        )
+        if desired_status == "active" and not row["email"]:
+            conn.execute(
+                sql("UPDATE licenses SET email = ?, updated_at = ? WHERE subscription_id = ?"),
+                (email, now, subscription_id),
+            )
+        conn.commit()
+        conn.close()
+        return row["license_key"]
+
+    if desired_status != "active":
+        conn.close()
+        return None
+
+    license_key = new_license_key()
+    conn.execute(
+        sql("""
+        INSERT INTO licenses (license_key, email, order_id, status, activations_json, created_at, updated_at, subscription_id)
+        VALUES (?, ?, ?, 'active', '[]', ?, ?, ?)
+        """),
+        (license_key, email, subscription_id, now, now, subscription_id),
+    )
+    conn.execute(
+        sql("UPDATE subscriptions SET license_key = ?, updated_at = ? WHERE subscription_id = ?"),
+        (license_key, now, subscription_id),
+    )
+    conn.commit()
+    conn.close()
+    return license_key
+
+
+def upsert_subscription_record(subscription_data, fallback_email: str = "", fallback_plan_code: str = ""):
+    subscription_id = str(subscription_data.get("id") or "").strip()
+    if not subscription_id:
+        raise HTTPException(status_code=502, detail="Mercado Pago no devolvio un ID de suscripcion.")
+
+    conn = db()
+    existing = conn.execute(sql("SELECT * FROM subscriptions WHERE subscription_id = ?"), (subscription_id,)).fetchone()
+    email = (
+        str(subscription_data.get("payer_email") or "").strip()
+        or fallback_email
+        or (existing["email"] if existing else "")
+    )
+    plan_id = (
+        str(subscription_data.get("preapproval_plan_id") or "").strip()
+        or (existing["plan_id"] if existing else "")
+    )
+    plan_code = fallback_plan_code or (existing["plan_code"] if existing else "")
+    reason = (
+        str(subscription_data.get("reason") or "").strip()
+        or (existing["reason"] if existing else build_subscription_reason(plan_code or "plan"))
+    )
+    status = str(subscription_data.get("status") or "pending").strip().lower()
+    external_reference = (
+        str(subscription_data.get("external_reference") or "").strip()
+        or (existing["external_reference"] if existing else "")
+    )
+    init_point = (
+        str(subscription_data.get("init_point") or "").strip()
+        or (existing["init_point"] if existing else "")
+    )
+    payer_id = str(subscription_data.get("payer_id") or "").strip()
+    next_payment_date = str(subscription_data.get("next_payment_date") or "").strip()
+    license_key = existing["license_key"] if existing else None
+    details_json = json.dumps(subscription_data)
+    now = utc_now()
+
+    if existing:
+        conn.execute(
+            sql("""
+            UPDATE subscriptions
+            SET external_reference = ?, email = ?, plan_code = ?, plan_id = ?, reason = ?, status = ?,
+                init_point = ?, payer_id = ?, next_payment_date = ?, details_json = ?, updated_at = ?
+            WHERE subscription_id = ?
+            """),
+            (
+                external_reference,
+                email,
+                plan_code,
+                plan_id,
+                reason,
+                status,
+                init_point,
+                payer_id,
+                next_payment_date,
+                details_json,
+                now,
+                subscription_id,
+            ),
+        )
+    else:
+        conn.execute(
+            sql("""
+            INSERT INTO subscriptions (
+                subscription_id, external_reference, email, plan_code, plan_id, reason, status, init_point,
+                payer_id, next_payment_date, last_payment_id, license_key, details_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?)
+            """),
+            (
+                subscription_id,
+                external_reference,
+                email,
+                plan_code,
+                plan_id,
+                reason,
+                status,
+                init_point,
+                payer_id,
+                next_payment_date,
+                details_json,
+                now,
+                now,
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    license_key = sync_license_with_subscription(subscription_id, email, status) or license_key
+    if license_key:
+        conn = db()
+        conn.execute(
+            sql("UPDATE subscriptions SET license_key = ?, updated_at = ? WHERE subscription_id = ?"),
+            (license_key, utc_now(), subscription_id),
+        )
+        conn.commit()
+        conn.close()
+
+    return fetch_subscription(subscription_id)
+
+
+def create_subscription_checkout(email: str, plan_code: str, external_reference: str = ""):
+    local_reference = external_reference.strip() or uuid.uuid4().hex
+    normalized_plan_code, _, subscription = create_mp_subscription(email, plan_code, local_reference)
+    row = upsert_subscription_record(subscription, fallback_email=email, fallback_plan_code=normalized_plan_code)
+    checkout_url = row["init_point"] if row else subscription.get("init_point")
+    if not checkout_url:
+        raise HTTPException(status_code=502, detail="Mercado Pago no devolvio una URL de suscripcion.")
+    return {
+        "subscription_id": row["subscription_id"],
+        "external_reference": row["external_reference"],
+        "plan_code": row["plan_code"],
+        "status": row["status"],
+        "checkout_url": checkout_url,
+        "license_key": row["license_key"],
+    }
+
+
+def sync_subscription_state(subscription_id: str):
+    subscription = get_subscription(subscription_id)
+    return upsert_subscription_record(subscription)
+
+
+def choose_latest_subscription(results):
+    if not results:
+        return None
+
+    def sort_key(item):
+        return (
+            str(item.get("last_modified") or ""),
+            str(item.get("date_last_updated") or ""),
+            str(item.get("date_created") or ""),
+            str(item.get("id") or ""),
+        )
+
+    return sorted(results, key=sort_key, reverse=True)[0]
+
+
+def resolve_subscription_from_plan_link(email: str, plan_code: str):
+    normalized_plan_code, plan_id = resolve_subscription_plan(plan_code)
+    result = search_subscriptions(email, plan_id)
+    subscription = choose_latest_subscription(result.get("results", []))
+    if not subscription:
+        return {
+            "found": False,
+            "subscription_id": "",
+            "email": email,
+            "plan_code": normalized_plan_code,
+            "status": "not_found",
+            "license_key": None,
+            "message": "Todavia no aparece una suscripcion para ese correo y plan.",
+        }
+
+    row = upsert_subscription_record(subscription, fallback_email=email, fallback_plan_code=normalized_plan_code)
+    current_status = row["status"]
+    return {
+        "found": True,
+        "subscription_id": row["subscription_id"],
+        "email": row["email"],
+        "plan_code": row["plan_code"],
+        "status": current_status,
+        "license_key": row["license_key"] if subscription_grants_access(current_status) else None,
+        "next_payment_date": row["next_payment_date"],
+    }
 
 
 @app.on_event("startup")
@@ -545,9 +957,24 @@ def storefront_home():
             </div>
             <button type="submit">Ir a Mercado Pago</button>
           </form>
+          <hr style="border:0;border-top:1px solid var(--line);margin:22px 0;">
+          <h3>Suscripcion recurrente</h3>
+          <p>Usa el mismo <strong>plan_code</strong> que configures en <strong>MP_SUBSCRIPTION_PLAN_MAP</strong>.</p>
+          <form class="form" method="post" action="/subscribe">
+            <div>
+              <label for="subscription_email">Correo del suscriptor</label>
+              <input id="subscription_email" type="email" name="email" placeholder="nombre@correo.com" required>
+            </div>
+            <div>
+              <label for="plan_code">Codigo del plan</label>
+              <input id="plan_code" type="text" name="plan_code" placeholder="monthly" value="monthly" required>
+            </div>
+            <button type="submit">Ir a suscripcion</button>
+          </form>
           <div class="meta">
             <div>Webhook del backend: <strong>{escape(PUBLIC_BASE_URL)}/webhooks/mercadopago</strong></div>
             <div>Activaciones permitidas por licencia: <strong>{escape(LICENSE_ACTIVATIONS)}</strong></div>
+            <div>Mapea tus planes con <strong>MP_SUBSCRIPTION_PLAN_MAP</strong> o <strong>MP_SUBSCRIPTION_PLAN_ID_*</strong>.</div>
             <div>Estado recomendado despues del pago: abrir la app y pulsar <strong>Verificar licencia</strong>.</div>
           </div>
         </div>
@@ -565,9 +992,56 @@ def buy_redirect(email: EmailStr = Form(...)):
     return RedirectResponse(checkout_url, status_code=303)
 
 
+@app.post("/subscribe")
+def subscribe_redirect(email: EmailStr = Form(...), plan_code: str = Form(DEFAULT_SUBSCRIPTION_PLAN_CODE)):
+    subscription = create_subscription_checkout(str(email), plan_code)
+    return RedirectResponse(subscription["checkout_url"], status_code=303)
+
+
 @app.post("/checkout/create")
 def checkout_create(payload: CheckoutRequest):
     return create_checkout_order(payload.email, payload.plan_code)
+
+
+@app.post("/subscriptions/create")
+def subscriptions_create(payload: SubscriptionCheckoutRequest):
+    return create_subscription_checkout(payload.email, payload.plan_code, payload.external_reference)
+
+
+@app.get("/subscription-plans")
+def subscription_plans():
+    plan_codes = sorted(set(MP_SUBSCRIPTION_LINK_MAP.keys()) | set(MP_SUBSCRIPTION_PLAN_MAP.keys()))
+    plans = []
+    for plan_code in plan_codes:
+        try:
+            normalized, plan_id, checkout_url = resolve_subscription_checkout_config(plan_code)
+        except HTTPException:
+            continue
+        plans.append(
+            {
+                "plan_code": normalized,
+                "checkout_url": checkout_url,
+                "plan_id": plan_id,
+            }
+        )
+    default_plan_code = DEFAULT_SUBSCRIPTION_PLAN_CODE if any(
+        plan["plan_code"] == DEFAULT_SUBSCRIPTION_PLAN_CODE for plan in plans
+    ) else (plans[0]["plan_code"] if plans else DEFAULT_SUBSCRIPTION_PLAN_CODE)
+    return {
+        "default_plan_code": default_plan_code,
+        "plans": plans,
+    }
+
+
+@app.post("/subscriptions/link")
+def subscriptions_link(payload: SubscriptionLinkRequest):
+    normalized_plan_code, _, checkout_url = resolve_subscription_checkout_config(payload.plan_code)
+    return {
+        "email": payload.email,
+        "plan_code": normalized_plan_code,
+        "checkout_url": checkout_url,
+        "status": "pending",
+    }
 
 
 @app.get("/checkout/status/{order_id}")
@@ -576,6 +1050,27 @@ def checkout_status(order_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Pedido no encontrado.")
     return {"order_id": row["order_id"], "status": row["status"], "license_key": row["license_key"], "email": row["email"]}
+
+
+@app.get("/subscriptions/status/{subscription_id}")
+def subscription_status(subscription_id: str, sync: bool = True):
+    row = sync_subscription_state(subscription_id) if sync else fetch_subscription(subscription_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Suscripcion no encontrada.")
+    return {
+        "subscription_id": row["subscription_id"],
+        "status": row["status"],
+        "email": row["email"],
+        "plan_code": row["plan_code"],
+        "license_key": row["license_key"],
+        "next_payment_date": row["next_payment_date"],
+        "external_reference": row["external_reference"],
+    }
+
+
+@app.post("/subscriptions/resolve")
+def subscription_resolve(payload: SubscriptionLookupRequest):
+    return resolve_subscription_from_plan_link(payload.email, payload.plan_code)
 
 
 @app.post("/licenses/activate")
@@ -588,10 +1083,17 @@ def activate_license(payload: LicenseRequest):
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Licencia no encontrada para ese correo.")
+    subscription = None
+    if row["subscription_id"]:
+        subscription = fetch_subscription(row["subscription_id"])
+        if not subscription_grants_access(subscription["status"] if subscription else ""):
+            conn.close()
+            return {"status": "inactive", "message": "La suscripcion asociada no esta activa."}
     if row["status"] != "active":
         conn.close()
         return {"status": "inactive", "message": "La licencia no esta activa."}
 
+    order = fetch_order_for_license(row)
     activations = json.loads(row["activations_json"])
     if payload.device_id not in activations:
         if len(activations) >= LICENSE_ACTIVATIONS:
@@ -604,7 +1106,13 @@ def activate_license(payload: LicenseRequest):
         )
         conn.commit()
     conn.close()
-    return {"status": "active", "message": "Licencia activada correctamente."}
+    return {
+        "status": "active",
+        "message": "Licencia activada correctamente.",
+        "next_payment_date": subscription["next_payment_date"] if subscription else "",
+        "subscription_id": subscription["subscription_id"] if subscription else "",
+        "plan_code": subscription["plan_code"] if subscription else (order["plan_code"] if order else ""),
+    }
 
 
 @app.post("/licenses/validate")
@@ -618,9 +1126,22 @@ def validate_license(payload: LicenseRequest):
     if not row:
         return {"status": "inactive", "message": "No existe una licencia para esos datos."}
 
+    subscription = None
+    if row["subscription_id"]:
+        subscription = fetch_subscription(row["subscription_id"])
+        if not subscription_grants_access(subscription["status"] if subscription else ""):
+            return {"status": "inactive", "message": "La suscripcion asociada no esta activa."}
+
     activations = json.loads(row["activations_json"])
     if row["status"] == "active" and payload.device_id in activations:
-        return {"status": "active", "message": "Licencia valida."}
+        order = fetch_order_for_license(row)
+        return {
+            "status": "active",
+            "message": "Licencia valida.",
+            "next_payment_date": subscription["next_payment_date"] if subscription else "",
+            "subscription_id": subscription["subscription_id"] if subscription else "",
+            "plan_code": subscription["plan_code"] if subscription else (order["plan_code"] if order else ""),
+        }
     return {"status": "inactive", "message": "Este dispositivo no esta activado."}
 
 
@@ -634,28 +1155,85 @@ async def mercadopago_webhook(request: Request):
     if not validate_webhook_signature(x_signature, x_request_id, data_id):
         raise HTTPException(status_code=401, detail="Firma de webhook invalida.")
 
-    if body.get("type") != "payment":
-        return {"received": True, "ignored": True}
+    topic = (
+        request.query_params.get("topic")
+        or request.query_params.get("type")
+        or body.get("topic")
+        or body.get("type")
+        or ""
+    ).strip()
+    resource_id = str(body.get("data", {}).get("id") or data_id or "").strip()
 
-    payment = get_payment(str(body.get("data", {}).get("id")))
-    order_id = payment.get("external_reference")
-    email = payment.get("payer", {}).get("email")
-    status = payment.get("status", "pending")
-    payment_id = str(payment.get("id"))
+    if topic == "payment":
+        payment = get_payment(resource_id)
+        order_id = payment.get("external_reference")
+        email = payment.get("payer", {}).get("email")
+        status = payment.get("status", "pending")
+        payment_id = str(payment.get("id"))
 
-    conn = db()
-    conn.execute(
-        sql("UPDATE orders SET payment_id = ?, status = ?, updated_at = ? WHERE order_id = ?"),
-        (payment_id, status, utc_now(), order_id),
-    )
-    conn.commit()
-    conn.close()
+        conn = db()
+        order_row = fetch_order(str(order_id)) if order_id else None
+        if order_row:
+            conn.execute(
+                sql("UPDATE orders SET payment_id = ?, status = ?, updated_at = ? WHERE order_id = ?"),
+                (payment_id, status, utc_now(), order_id),
+            )
+        subscription_row = None
+        if payment.get("metadata", {}).get("subscription_id"):
+            subscription_row = fetch_subscription(str(payment["metadata"]["subscription_id"]))
+        elif order_id:
+            subscription_row = fetch_subscription_by_external_reference(str(order_id))
+        if subscription_row:
+            conn.execute(
+                sql("UPDATE subscriptions SET last_payment_id = ?, updated_at = ? WHERE subscription_id = ?"),
+                (payment_id, utc_now(), subscription_row["subscription_id"]),
+            )
+        conn.commit()
+        conn.close()
 
-    license_key = None
-    if status == "approved" and order_id and email:
-        license_key = ensure_license_for_paid_order(order_id, email)
+        license_key = None
+        if order_row and status == "approved" and order_id and email:
+            license_key = ensure_license_for_paid_order(order_id, email)
 
-    return {"received": True, "status": status, "order_id": order_id, "license_key": license_key}
+        return {"received": True, "topic": topic, "status": status, "order_id": order_id, "license_key": license_key}
+
+    if topic == "subscription_preapproval":
+        subscription_row = sync_subscription_state(resource_id)
+        return {
+            "received": True,
+            "topic": topic,
+            "subscription_id": subscription_row["subscription_id"],
+            "status": subscription_row["status"],
+            "license_key": subscription_row["license_key"],
+        }
+
+    if topic == "subscription_authorized_payment":
+        authorized_payment = get_authorized_payment(resource_id)
+        subscription_id = str(authorized_payment.get("preapproval_id") or "").strip()
+        subscription_row = sync_subscription_state(subscription_id) if subscription_id else None
+
+        if subscription_row:
+            conn = db()
+            conn.execute(
+                sql("UPDATE subscriptions SET last_payment_id = ?, updated_at = ? WHERE subscription_id = ?"),
+                (str(authorized_payment.get("payment", {}).get("id") or authorized_payment.get("id") or ""), utc_now(), subscription_id),
+            )
+            conn.commit()
+            conn.close()
+
+        return {
+            "received": True,
+            "topic": topic,
+            "subscription_id": subscription_id,
+            "status": subscription_row["status"] if subscription_row else authorized_payment.get("status", ""),
+            "payment_status": authorized_payment.get("payment", {}).get("status", ""),
+            "license_key": subscription_row["license_key"] if subscription_row else None,
+        }
+
+    if topic == "subscription_preapproval_plan":
+        return {"received": True, "topic": topic, "ignored": True}
+
+    return {"received": True, "topic": topic or "unknown", "ignored": True}
 
 
 def render_checkout_result(kind: str, title: str, message: str, order_id: str = "", payment_id: str = ""):
@@ -694,6 +1272,40 @@ def render_checkout_result(kind: str, title: str, message: str, order_id: str = 
     return render_page(title, body)
 
 
+def render_subscription_result(kind: str, title: str, message: str, subscription_id: str = ""):
+    row = fetch_subscription(subscription_id) if subscription_id else None
+    status = row["status"] if row else kind
+    status_class = {"authorized": "ok", "active": "ok", "pending": "warn", "paused": "warn", "cancelled": "danger", "canceled": "danger"}.get(status, "warn")
+
+    details = []
+    if row:
+        details.append(f"<div><strong>Suscripcion:</strong> {escape(row['subscription_id'])}</div>")
+        details.append(f"<div><strong>Correo:</strong> {escape(row['email'])}</div>")
+        details.append(f"<div><strong>Plan:</strong> {escape(row['plan_code'])}</div>")
+        details.append(f"<div><strong>Estado registrado:</strong> {escape(row['status'])}</div>")
+        if row["license_key"]:
+            details.append(f"<div><strong>Licencia activa:</strong> {escape(row['license_key'])}</div>")
+        if row["next_payment_date"]:
+            details.append(f"<div><strong>Proximo cobro:</strong> {escape(row['next_payment_date'])}</div>")
+
+    body = f"""
+      <section class="panel card">
+        <div class="brand"><span class="dot"></span>{escape(APP_NAME)}</div>
+        <div class="status {status_class}">{escape(title)}</div>
+        <h2>{escape(title)}</h2>
+        <p>{escape(message)}</p>
+        <div class="code">
+          {''.join(details) or '<div>La suscripcion se esta sincronizando.</div>'}
+        </div>
+        <div class="actions">
+          <a class="button" href="{escape(SITE_BASE_URL)}/">Volver al sitio</a>
+          <a class="button secondary" href="{escape(PUBLIC_BASE_URL)}/docs">Ver API</a>
+        </div>
+      </section>
+    """
+    return render_page(title, body)
+
+
 @app.get("/checkout/return/success", response_class=HTMLResponse)
 def checkout_return_success(external_reference: str = "", payment_id: str = "", status: str = ""):
     order_id = external_reference.strip()
@@ -722,4 +1334,36 @@ def checkout_return_failure(external_reference: str = "", payment_id: str = ""):
         "El cobro no se completo. Puedes intentarlo otra vez desde la app o desde esta pagina.",
         order_id=external_reference.strip(),
         payment_id=payment_id,
+    )
+
+
+@app.get("/subscriptions/return", response_class=HTMLResponse)
+def subscriptions_return(preapproval_id: str = "", status: str = ""):
+    subscription_id = preapproval_id.strip()
+    if subscription_id:
+        try:
+            sync_subscription_state(subscription_id)
+        except HTTPException:
+            pass
+
+    normalized_status = status.strip().lower() or "pending"
+    if normalized_status in SUBSCRIPTION_ACTIVE_STATUSES:
+        return render_subscription_result(
+            normalized_status,
+            "Suscripcion activa",
+            "La suscripcion quedo autorizada. Ya puedes volver a la app y validar tu licencia.",
+            subscription_id=subscription_id,
+        )
+    if normalized_status in {"cancelled", "canceled"}:
+        return render_subscription_result(
+            normalized_status,
+            "Suscripcion cancelada",
+            "La suscripcion fue cancelada. Si necesitas acceso otra vez, inicia una nueva suscripcion.",
+            subscription_id=subscription_id,
+        )
+    return render_subscription_result(
+        normalized_status,
+        "Suscripcion en proceso",
+        "Mercado Pago esta terminando de sincronizar el estado. Vuelve a la app y consulta el estado en unos segundos.",
+        subscription_id=subscription_id,
     )
