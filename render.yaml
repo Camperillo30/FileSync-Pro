@@ -3,7 +3,7 @@ services:
     name: filesync-pro-api
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements-backend.txt
+    buildCommand: python -m pip install --upgrade pip setuptools wheel && pip install -r requirements-backend.txt
     startCommand: uvicorn backend_app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
