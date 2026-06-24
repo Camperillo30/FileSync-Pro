@@ -1,6 +1,8 @@
 import ctypes
+import csv
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import platform
@@ -29,6 +31,11 @@ try:
     import pytesseract
 except ImportError:
     pytesseract = None
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
 
 
 DESKTOP_RUNTIME_CONFIG_NAME = "desktop_runtime_config.json"
@@ -71,6 +78,7 @@ def load_runtime_config_file(path: Path, override_existing: bool = False):
                 os.environ[normalized_key] = serialized
             else:
                 os.environ.setdefault(normalized_key, serialized)
+            continue
         elif value is not None:
             serialized = str(value).strip()
             if override_existing:
@@ -196,14 +204,25 @@ MONTH_FOLDER_NAMES = {
     12: "12 - Diciembre",
 }
 DEFAULT_API_BASE_URL = os.getenv("FILESYNC_PRO_API_URL", "").strip()
+SHEETS_LICENSE_URL = os.getenv("FILESYNC_PRO_SHEETS_URL", "").strip()
 DEFAULT_PLAN_CODE = "basica"
 DEFAULT_SUBSCRIPTION_PLAN_CODE = os.getenv("FILESYNC_PRO_DEFAULT_PLAN_CODE", DEFAULT_PLAN_CODE).strip().lower() or DEFAULT_PLAN_CODE
+# Cada plan tiene un link mensual y uno anual. La clave compuesta es "<plan>_<frecuencia>".
 DEFAULT_SUBSCRIPTION_LINK_MAP = {
-    "basica": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=1e1c97ccb30e4f60a44908870323dcef",
-    "pro": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=7dba4d5ff8f44a5183af6e122c8eab79",
-    "premium": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=1d5fb85741ac4454a871e6f2d5870f4",
+    "basica_mensual": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=1e1c97ccb30e4f60a44908870323dcef",
+    "basica_anual": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=PEGAR_ID_BASICA_ANUAL",
+    "pro_mensual": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=7dba4d5ff8f44a5183af6e122c8eab79",
+    "pro_anual": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=PEGAR_ID_PRO_ANUAL",
+    "premium_mensual": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=1d5fb85741ac4454a871e6f2d5870f4",
+    "premium_anual": "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=PEGAR_ID_PREMIUM_ANUAL",
 }
 SUBSCRIPTION_LINK_MAP = {**DEFAULT_SUBSCRIPTION_LINK_MAP, **load_json_object_env("MP_SUBSCRIPTION_LINK_MAP")}
+# Precios de referencia solo para mostrar en pantalla (no se cobran desde aquí; el cobro real lo define el plan en Mercado Pago).
+PLAN_PRICING_COP = {
+    "basica": {"mensual": 12900, "anual": 129000},
+    "pro": {"mensual": 27900, "anual": 279000},
+    "premium": {"mensual": 44900, "anual": 449000},
+}
 TRIAL_DAYS = 0
 EMAIL_REGEX = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.IGNORECASE)
 COMMON_EMAIL_DOMAIN_FIXES = {
@@ -620,6 +639,279 @@ class ModernOrganizadorArchivos:
         for lista in self.categorias.values():
             extensiones.update(lista)
         return sorted(extensiones)
+
+
+class InvoiceExtractor:
+    """Extrae campos comunes desde facturas en imagen, PDF digital o texto."""
+
+    IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+    PDF_EXTENSIONS = {".pdf"}
+    TEXT_EXTENSIONS = {".txt", ".csv", ".xml"}
+    SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS | TEXT_EXTENSIONS
+
+    INVOICE_LABELS = (
+        "factura electronica de venta",
+        "factura de venta",
+        "factura",
+        "invoice",
+        "comprobante",
+    )
+    NUMBER_LABELS = (
+        "numero",
+        "nro",
+        "no",
+        "num",
+        "factura",
+        "invoice",
+        "consecutivo",
+    )
+    TOTAL_LABELS = (
+        "total a pagar",
+        "valor total",
+        "total factura",
+        "total",
+        "importe total",
+        "amount due",
+    )
+    SUBTOTAL_LABELS = (
+        "subtotal",
+        "sub total",
+        "base gravable",
+        "base imponible",
+        "valor bruto",
+    )
+    TAX_LABELS = (
+        "iva",
+        "impuesto",
+        "impuestos",
+        "tax",
+        "vat",
+    )
+
+    date_pattern = re.compile(
+        r"\b("
+        r"\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}"
+        r"|"
+        r"\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}"
+        r")\b"
+    )
+    amount_pattern = re.compile(r"(?:COP|USD|EUR|MXN|ARS|CLP|\$)?\s*[-+]?\d[\d.,]*(?:\s*(?:COP|USD|EUR|MXN|ARS|CLP))?", re.IGNORECASE)
+    id_pattern = re.compile(r"\b(?:NIT|RUC|CUIT|RFC|CIF|ID|Identificacion)\s*[:#\-]?\s*([0-9A-Z.\-]{5,})", re.IGNORECASE)
+    invoice_number_pattern = re.compile(
+        r"\b(?:Factura|Invoice|No\.?|Nro\.?|Numero|Num\.?|Consecutivo)\s*(?:No\.?|Nro\.?|Numero|#|:|-)?\s*([A-Z0-9][A-Z0-9\-_.]{2,})",
+        re.IGNORECASE,
+    )
+    email_pattern = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+
+    def __init__(self):
+        self._ocr_cache = {}
+
+    def is_supported(self, path):
+        return Path(path).suffix.lower() in self.SUPPORTED_EXTENSIONS
+
+    def extract_many(self, paths):
+        results = []
+        for path in paths:
+            results.append(self.extract(path))
+        return results
+
+    def extract(self, path):
+        invoice_path = Path(path)
+        result = {
+            "archivo": invoice_path.name,
+            "ruta": str(invoice_path),
+            "proveedor": "",
+            "numero": "",
+            "fecha": "",
+            "nit": "",
+            "email": "",
+            "subtotal": "",
+            "iva": "",
+            "total": "",
+            "confianza": "0%",
+            "estado": "sin_texto",
+            "texto": "",
+        }
+
+        try:
+            text = self.extract_text(invoice_path)
+        except Exception as exc:
+            result["estado"] = f"error: {exc}"
+            return result
+
+        normalized_text = self._normalize_text(text)
+        result["texto"] = normalized_text[:4000]
+        if not normalized_text:
+            return result
+
+        lines = self._clean_lines(normalized_text)
+        result.update(
+            {
+                "proveedor": self._extract_supplier(lines),
+                "numero": self._extract_invoice_number(normalized_text, lines),
+                "fecha": self._extract_date(normalized_text, lines),
+                "nit": self._extract_tax_id(normalized_text),
+                "email": self._extract_email(normalized_text),
+                "subtotal": self._find_labeled_amount(lines, self.SUBTOTAL_LABELS),
+                "iva": self._find_labeled_amount(lines, self.TAX_LABELS),
+                "total": self._extract_total(lines),
+            }
+        )
+        score = self._confidence_score(result)
+        result["confianza"] = f"{score}%"
+        result["estado"] = "ok" if score >= 65 else "parcial"
+        return result
+
+    def extract_text(self, path):
+        suffix = path.suffix.lower()
+        if suffix in self.IMAGE_EXTENSIONS:
+            return self._extract_image_text(path)
+        if suffix in self.PDF_EXTENSIONS:
+            return self._extract_pdf_text(path)
+        if suffix in self.TEXT_EXTENSIONS:
+            return path.read_text(encoding="utf-8", errors="ignore")
+        raise ValueError("Formato no soportado")
+
+    def _extract_image_text(self, path):
+        if Image is None or pytesseract is None:
+            raise RuntimeError("Falta instalar Pillow o Tesseract OCR para leer imagenes.")
+        cache_key = str(path)
+        if cache_key in self._ocr_cache:
+            return self._ocr_cache[cache_key]
+        with Image.open(path) as image:
+            processed = image.convert("L")
+            width, height = processed.size
+            longest_side = max(width, height, 1)
+            if longest_side < 1800:
+                scale = max(1, round(1800 / longest_side))
+                if scale > 1:
+                    processed = processed.resize((width * scale, height * scale))
+            text = pytesseract.image_to_string(processed, lang="spa+eng")
+        self._ocr_cache[cache_key] = text
+        return text
+
+    def _extract_pdf_text(self, path):
+        if PdfReader is None:
+            raise RuntimeError("Falta instalar pypdf para leer PDFs digitales.")
+        reader = PdfReader(str(path))
+        pages = []
+        for page in reader.pages[:5]:
+            pages.append(page.extract_text() or "")
+        return "\n".join(pages)
+
+    @staticmethod
+    def _normalize_text(text):
+        return re.sub(r"[ \t]+", " ", str(text or "")).replace("\r", "\n").strip()
+
+    @staticmethod
+    def _clean_lines(text):
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    @staticmethod
+    def _fold(text):
+        translation = str.maketrans("áéíóúüñÁÉÍÓÚÜÑ", "aeiouunAEIOUUN")
+        return str(text or "").translate(translation).lower()
+
+    def _extract_supplier(self, lines):
+        ignored = ("factura", "invoice", "nit", "ruc", "fecha", "total", "subtotal", "iva", "www.", "http")
+        for line in lines[:12]:
+            folded = self._fold(line)
+            if len(line) < 4 or any(token in folded for token in ignored):
+                continue
+            if self.amount_pattern.search(line) or self.date_pattern.search(line):
+                continue
+            return line[:120]
+        return ""
+
+    def _extract_invoice_number(self, text, lines):
+        for line in lines[:30]:
+            folded = self._fold(line)
+            if not any(label in folded for label in self.NUMBER_LABELS):
+                continue
+            match = self.invoice_number_pattern.search(line)
+            if match:
+                return match.group(1).strip(" .:-#")
+        match = self.invoice_number_pattern.search(text)
+        if match:
+            return match.group(1).strip(" .:-#")
+        return ""
+
+    def _extract_date(self, text, lines):
+        for line in lines[:40]:
+            folded = self._fold(line)
+            if "fecha" in folded or "date" in folded or "emision" in folded:
+                match = self.date_pattern.search(line)
+                if match:
+                    return match.group(1)
+        match = self.date_pattern.search(text)
+        return match.group(1) if match else ""
+
+    def _extract_tax_id(self, text):
+        match = self.id_pattern.search(text)
+        return match.group(1).strip(" .:-#") if match else ""
+
+    def _extract_email(self, text):
+        match = self.email_pattern.search(text)
+        return match.group(0) if match else ""
+
+    def _extract_total(self, lines):
+        total = self._find_labeled_amount(lines, self.TOTAL_LABELS, prefer_last=True)
+        if total:
+            return total
+        all_amounts = []
+        for line in lines:
+            all_amounts.extend(self._extract_amounts(line))
+        if not all_amounts:
+            return ""
+        return all_amounts[-1]
+
+    def _find_labeled_amount(self, lines, labels, prefer_last=False):
+        candidates = []
+        for line in lines:
+            folded = self._fold(line)
+            if any(label in folded for label in labels):
+                amounts = self._extract_amounts(line)
+                if amounts:
+                    candidates.extend(amounts)
+        if not candidates:
+            return ""
+        return candidates[-1] if prefer_last else candidates[0]
+
+    def _extract_amounts(self, line):
+        amounts = []
+        for raw in self.amount_pattern.findall(line):
+            normalized = self._normalize_money(raw)
+            if normalized:
+                amounts.append(normalized)
+        return amounts
+
+    @staticmethod
+    def _normalize_money(raw):
+        text = re.sub(r"(?i)\b(COP|USD|EUR|MXN|ARS|CLP)\b", "", str(raw or ""))
+        text = text.replace("$", "").strip()
+        text = re.sub(r"[^0-9,.\-]", "", text)
+        if not re.search(r"\d", text):
+            return ""
+        if "," in text and "." in text:
+            decimal_separator = "," if text.rfind(",") > text.rfind(".") else "."
+            thousand_separator = "." if decimal_separator == "," else ","
+            text = text.replace(thousand_separator, "").replace(decimal_separator, ".")
+        elif "," in text:
+            parts = text.split(",")
+            text = "".join(parts[:-1]) + "." + parts[-1] if len(parts[-1]) <= 2 else "".join(parts)
+        elif "." in text:
+            parts = text.split(".")
+            text = "".join(parts[:-1]) + "." + parts[-1] if len(parts[-1]) <= 2 else "".join(parts)
+        try:
+            return f"{float(text):,.2f}"
+        except ValueError:
+            return raw.strip()
+
+    @staticmethod
+    def _confidence_score(result):
+        important_fields = ("proveedor", "numero", "fecha", "nit", "subtotal", "iva", "total")
+        found = sum(1 for field in important_fields if result.get(field))
+        return round((found / len(important_fields)) * 100)
 
 
 class LicenseManager:
@@ -1116,77 +1408,158 @@ class ProcessRecoveryManager:
         return snapshot
 
 
-class PaymentAPIClient:
-    """Cliente HTTP minimo para comunicarse con el servicio de licencias."""
+class SheetsLicenseClient:
+    """
+    Cliente de licencias sin backend propio.
+    Lee un Google Sheet publicado como CSV para verificar suscripciones.
+    No requiere servidor, Render, ni base de datos propia.
 
-    def __init__(self, base_url):
-        self.base_url = (base_url or "").rstrip("/")
+    El Sheet debe tener estas columnas (fila 1 = encabezados):
+        email | plan | estado | fecha_pago
 
-    def _humanize_http_error(self, status_code, detail):
-        parsed_detail = detail.strip()
+    Para obtener la URL CSV de tu Sheet:
+        Archivo → Compartir → Publicar en la web → CSV → Copiar enlace
+    Luego ponla en FILESYNC_PRO_SHEETS_URL dentro de desktop_runtime_config.json.
+    """
+
+    _CONNECTION_MSG = (
+        "No pudimos conectar con el servicio de licencias en este momento.\n\n"
+        "Verifica tu conexión a internet e inténtalo nuevamente."
+    )
+    _NO_URL_MSG = (
+        "El servicio de licencias no está configurado en esta instalación.\n\n"
+        "Contacta al soporte para obtener asistencia."
+    )
+
+    def __init__(self, sheets_url):
+        self.sheets_url = (sheets_url or "").strip()
+
+    def _fetch_rows(self, timeout=15):
+        """Descarga el CSV del Sheet y devuelve una lista de dicts."""
+        if not self.sheets_url:
+            raise LicensingError(self._NO_URL_MSG)
+        req = request.Request(self.sheets_url, headers={"User-Agent": "FileSync-Pro/3"})
         try:
-            payload = json.loads(parsed_detail)
-            if isinstance(payload, dict) and payload.get("detail"):
-                parsed_detail = str(payload["detail"])
-        except json.JSONDecodeError:
-            pass
-
-        return f"Error HTTP {status_code}: {parsed_detail}"
-
-    def _connection_help_message(self):
-        return (
-            "No pudimos conectar con el servicio de licencias en este momento.\n\n"
-            "Verifica tu conexion a internet e intenta nuevamente en unos minutos."
-        )
-
-    def health_check(self):
-        return self._request_json("GET", "/health")
-
-    def _request_json(self, method, path, payload=None):
-        if not self.base_url:
-            raise LicensingError(self._connection_help_message())
-        url = f"{self.base_url}{path}"
-        data = None
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if payload is not None:
-            data = json.dumps(payload).encode("utf-8")
-        req = request.Request(url, data=data, headers=headers, method=method)
-        try:
-            with request.urlopen(req, timeout=20) as response:
-                raw = response.read().decode("utf-8")
-                if not raw.strip():
-                    return {}
-                return json.loads(raw)
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise LicensingError(self._humanize_http_error(exc.code, detail)) from exc
+            with request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8-sig")
         except error.URLError as exc:
-            raise LicensingError(self._connection_help_message()) from exc
-        except json.JSONDecodeError as exc:
-            raise LicensingError("No fue posible completar la verificacion en este momento. Intenta nuevamente.") from exc
+            raise LicensingError(self._CONNECTION_MSG) from exc
 
-    def create_checkout(self, email, plan_code="pro_lifetime"):
-        return self._request_json("POST", "/checkout/create", {"email": email, "plan_code": plan_code})
+        reader = csv.DictReader(io.StringIO(raw))
+        return [
+            {k.strip().lower(): v.strip() for k, v in row.items()}
+            for row in reader
+        ]
+
+    def _find_row(self, email, plan_code=None):
+        """Busca la primera fila activa que coincida con el email (y opcionalmente el plan)."""
+        email_norm = email.strip().lower()
+        rows = self._fetch_rows()
+        for row in rows:
+            if row.get("email", "").lower() != email_norm:
+                continue
+            if plan_code and row.get("plan", "").lower() != plan_code.lower():
+                continue
+            if row.get("estado", "").lower() in {"activo", "active", "authorized"}:
+                return row
+        return None
+
+    def warm_up(self):
+        """No-op: sin servidor que despertar."""
+        pass
+
+    def health_check(self, timeout=15):
+        """Verifica que el Sheet sea accesible."""
+        try:
+            self._fetch_rows(timeout=timeout)
+            return {"status": "ok"}
+        except LicensingError:
+            return {"status": "error"}
 
     def resolve_subscription(self, email, plan_code):
-        return self._request_json("POST", "/subscriptions/resolve", {"email": email, "plan_code": plan_code})
+        """
+        Consulta el Sheet para verificar si el email tiene una suscripción activa.
+        Devuelve un dict compatible con el formato que espera la app.
+        """
+        row = self._find_row(email, plan_code)
+        if row is None:
+            # Intentar sin filtro de plan (por si el plan guardado difiere levemente)
+            row = self._find_row(email)
+        if row is None:
+            return {"status": "not_found"}
+
+        plan = row.get("plan", plan_code).lower()
+        fecha = row.get("fecha_pago", "").strip()
+
+        # Calcular fecha de vencimiento = fecha_pago + 30 días
+        expires_at = self._calcular_vencimiento(fecha, dias=30)
+
+        # Clave determinística: no requiere BD
+        raw_key = f"{email.lower()}:{plan}:filesync"
+        license_key = "FS-" + hashlib.sha256(raw_key.encode()).hexdigest()[:20].upper()
+
+        return {
+            "status": "active",
+            "email": email,
+            "plan_code": plan,
+            "license_key": license_key,
+            "subscription_id": f"sheets:{email.lower()}",
+            "next_payment_date": expires_at,
+        }
 
     def activate_license(self, email, license_key, device_id):
-        return self._request_json(
-            "POST",
-            "/licenses/activate",
-            {"email": email, "license_key": license_key, "device_id": device_id},
-        )
+        """
+        Sin servidor propio no hay activación remota.
+        La verificación de dispositivos se maneja localmente en LicenseManager.
+        Siempre aprueba si la clave es válida (generada por resolve_subscription).
+        """
+        return {
+            "status": "active",
+            "email": email,
+            "license_key": license_key,
+            "subscription_id": f"sheets:{email.lower()}",
+        }
 
     def validate_license(self, email, license_key, device_id):
-        return self._request_json(
-            "POST",
-            "/licenses/validate",
-            {"email": email, "license_key": license_key, "device_id": device_id},
-        )
+        """Re-verifica en el Sheet que la suscripción siga activa."""
+        row = self._find_row(email)
+        if row is None:
+            return {"status": "inactive"}
+        plan = row.get("plan", "").lower()
+        fecha = row.get("fecha_pago", "").strip()
+        expires_at = self._calcular_vencimiento(fecha, dias=30)
+        return {
+            "status": "active",
+            "email": email,
+            "plan_code": plan,
+            "license_key": license_key,
+            "next_payment_date": expires_at,
+        }
 
-    def get_checkout_status(self, order_id):
-        return self._request_json("GET", f"/checkout/status/{order_id}")
+    @staticmethod
+    def _calcular_vencimiento(fecha_pago, dias=30):
+        """
+        Calcula la fecha de vencimiento sumando `dias` a la fecha_pago.
+        Soporta formatos ISO 8601 y DD/MM/YYYY.
+        Devuelve string ISO 8601 o vacío si no puede parsear.
+        """
+        if not fecha_pago:
+            return ""
+        formatos = [
+            "%Y-%m-%dT%H:%M:%S.%fZ",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+            "%d/%m/%Y",
+        ]
+        for fmt in formatos:
+            try:
+                base = dt.datetime.strptime(fecha_pago[:len(fmt) + 5].strip(), fmt)
+                vencimiento = base + dt.timedelta(days=dias)
+                return vencimiento.strftime("%Y-%m-%dT%H:%M:%S")
+            except ValueError:
+                continue
+        return ""
 
 
 class ModernOrganizadorGUI(tk.Tk):
@@ -1199,8 +1572,9 @@ class ModernOrganizadorGUI(tk.Tk):
 
         self.license_manager = LicenseManager()
         self.process_recovery = ProcessRecoveryManager()
-        self.api_client = PaymentAPIClient(DEFAULT_API_BASE_URL)
+        self.api_client = SheetsLicenseClient(SHEETS_LICENSE_URL)
         self.organizador = ModernOrganizadorArchivos()
+        self.invoice_extractor = InvoiceExtractor()
 
         self.directorio_origen = tk.StringVar()
         self.directorio_destino = tk.StringVar()
@@ -1225,6 +1599,9 @@ class ModernOrganizadorGUI(tk.Tk):
             "categorias": tk.StringVar(value="0"),
         }
         self._buttons = []
+        self._invoice_buttons = []
+        self.invoice_results = []
+        self.invoice_tree = None
         self._feature_controls = {}
         self._current_run_limit = None
         self._run_in_progress = False
@@ -1234,6 +1611,9 @@ class ModernOrganizadorGUI(tk.Tk):
         self._recovery_batch_size = 50
         self._left_scroll_canvas = None
         self._left_scroll_window = None
+        self._right_scroll_canvas = None
+        self._right_scroll_window = None
+        self._scroll_activo_canvas = None
 
         self._configurar_icono()
         self.configurar_estilos()
@@ -1247,6 +1627,8 @@ class ModernOrganizadorGUI(tk.Tk):
         self.after(1200, self._sincronizar_licencia_silenciosa)
         self.after(1400, self._ofrecer_reanudar_proceso)
         self.bind("<FocusIn>", lambda _: self._sincronizar_licencia_silenciosa())
+        # Despierta el backend de Render en segundo plano para evitar "servicio lento"
+        threading.Thread(target=self.api_client.warm_up, daemon=True).start()
 
     def _configurar_tamano_inicial(self):
         screen_width = self.winfo_screenwidth()
@@ -1276,7 +1658,30 @@ class ModernOrganizadorGUI(tk.Tk):
 
     @staticmethod
     def _plan_links():
-        return {key: value for key, value in SUBSCRIPTION_LINK_MAP.items() if value}
+        return {key: value for key, value in SUBSCRIPTION_LINK_MAP.items() if value and "PEGAR_ID" not in value}
+
+    @staticmethod
+    def _dividir_plan_frecuencia(plan_freq_code):
+        if plan_freq_code.endswith("_anual"):
+            return plan_freq_code[: -len("_anual")], "anual"
+        if plan_freq_code.endswith("_mensual"):
+            return plan_freq_code[: -len("_mensual")], "mensual"
+        return plan_freq_code, "mensual"
+
+    @staticmethod
+    def _formatear_cop(valor):
+        return f"${valor:,.0f}".replace(",", ".") + " COP"
+
+    @staticmethod
+    def _default_plan_freq_code(plan_links, plans):
+        """Resuelve la clave compuesta por defecto, prefiriendo la variante mensual del plan configurado."""
+        preferred_mensual = f"{DEFAULT_SUBSCRIPTION_PLAN_CODE}_mensual"
+        if preferred_mensual in plan_links:
+            return preferred_mensual
+        preferred_anual = f"{DEFAULT_SUBSCRIPTION_PLAN_CODE}_anual"
+        if preferred_anual in plan_links:
+            return preferred_anual
+        return plans[0]
 
     @staticmethod
     def _plan_labels():
@@ -1286,18 +1691,40 @@ class ModernOrganizadorGUI(tk.Tk):
             "premium": "Licencia Premium",
         }
 
-    @staticmethod
-    def _plan_descriptions():
-        return {
+    def _plan_descriptions(self):
+        base_descriptions = {
             "basica": "Organización esencial por categorías. No incluye filtro por extensión, mover archivos ni eliminar duplicados.",
             "pro": "Agrega filtro por extensión y eliminación de duplicados. Mantiene copia segura en lugar de mover archivos.",
             "premium": "Desbloquea todas las funciones, incluido mover archivos en lugar de copiarlos.",
         }
+        descriptions = {}
+        for plan_freq_code in self._plan_links():
+            plan, freq = self._dividir_plan_frecuencia(plan_freq_code)
+            base = base_descriptions.get(plan, "Suscripción con bloqueo automático si no se renueva.")
+            precios = PLAN_PRICING_COP.get(plan, {})
+            if freq == "anual" and "anual" in precios and "mensual" in precios:
+                ahorro = precios["mensual"] * 12 - precios["anual"]
+                precio_txt = (
+                    f"{self._formatear_cop(precios['anual'])}/año "
+                    f"(ahorras {self._formatear_cop(ahorro)} vs. mensual)"
+                )
+            elif freq == "mensual" and "mensual" in precios:
+                precio_txt = f"{self._formatear_cop(precios['mensual'])}/mes"
+            else:
+                precio_txt = ""
+            descriptions[plan_freq_code] = f"{base}\n{precio_txt}" if precio_txt else base
+        return descriptions
 
     @staticmethod
     def _sort_plan_codes(plan_codes):
-        preferred_order = {"basica": 0, "pro": 1, "premium": 2}
-        return sorted(plan_codes, key=lambda code: (preferred_order.get(code, 99), code))
+        preferred_plan_order = {"basica": 0, "pro": 1, "premium": 2}
+        preferred_freq_order = {"mensual": 0, "anual": 1}
+
+        def sort_key(code):
+            plan, freq = ModernOrganizadorGUI._dividir_plan_frecuencia(code)
+            return (preferred_plan_order.get(plan, 99), preferred_freq_order.get(freq, 9), code)
+
+        return sorted(plan_codes, key=sort_key)
 
     def _nombre_plan(self, plan_code):
         normalized = (plan_code or "").strip().lower()
@@ -1467,8 +1894,14 @@ class ModernOrganizadorGUI(tk.Tk):
 
         selected_plan = tk.StringVar(value=default_plan)
         result = {"plan_code": ""}
-        labels = self._plan_labels()
+        base_labels = self._plan_labels()
         descriptions = self._plan_descriptions()
+        freq_suffix = {"mensual": "Mensual", "anual": "Anual"}
+
+        def etiqueta_completa(plan_freq_code):
+            plan, freq = self._dividir_plan_frecuencia(plan_freq_code)
+            base = base_labels.get(plan, plan.replace("_", " ").title())
+            return f"{base} — {freq_suffix.get(freq, freq.title())}"
 
         wrapper = ttk.Frame(dialog, padding=16)
         wrapper.pack(fill=tk.BOTH, expand=True)
@@ -1480,8 +1913,8 @@ class ModernOrganizadorGUI(tk.Tk):
         ).pack(anchor=tk.W, pady=(0, 10))
 
         for plan_code in plan_codes:
-            label = labels.get(plan_code, plan_code.replace("_", " ").title())
-            description = descriptions.get(plan_code, "Suscripción mensual con bloqueo automático si no se renueva.")
+            label = etiqueta_completa(plan_code)
+            description = descriptions.get(plan_code, "Suscripción con bloqueo automático si no se renueva.")
             option = ttk.Frame(wrapper, padding=(0, 4, 0, 8))
             option.pack(fill=tk.X, anchor=tk.W)
             ttk.Radiobutton(
@@ -1629,6 +2062,7 @@ class ModernOrganizadorGUI(tk.Tk):
         ).pack(side=tk.LEFT)
 
         for text, command in [
+            ("Verificar licencia", self.verificar_licencia),
             ("Comprar licencia", self.comprar_licencia),
         ]:
             btn = ttk.Button(license_bar, text=text, command=command, style="Secondary.TButton")
@@ -1710,8 +2144,25 @@ class ModernOrganizadorGUI(tk.Tk):
         self._crear_stat_card(stats_grid, 1, 1, "Categorías", self.estadisticas["categorias"])
 
     def _crear_panel_derecho(self, parent):
-        right_panel = ttk.Frame(parent)
-        right_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_host = ttk.Frame(parent, style="ScrollHost.TFrame")
+        right_host.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_host.columnconfigure(0, weight=1)
+        right_host.rowconfigure(0, weight=1)
+
+        self._right_scroll_canvas = tk.Canvas(right_host, highlightthickness=0, background="#f4f6f8")
+        right_scrollbar = ttk.Scrollbar(right_host, orient="vertical", command=self._right_scroll_canvas.yview)
+        self._right_scroll_canvas.configure(yscrollcommand=right_scrollbar.set)
+        self._right_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        right_scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+
+        scroll_body = ttk.Frame(self._right_scroll_canvas)
+        self._right_scroll_window = self._right_scroll_canvas.create_window((0, 0), window=scroll_body, anchor="nw")
+        scroll_body.bind("<Configure>", self._actualizar_scroll_panel_derecho)
+        self._right_scroll_canvas.bind("<Configure>", self._ajustar_ancho_panel_derecho)
+        self._right_scroll_canvas.bind("<Enter>", self._activar_scroll_panel_derecho)
+        self._right_scroll_canvas.bind("<Leave>", self._desactivar_scroll_panel_derecho)
+
+        right_panel = scroll_body
 
         checkout_frame = ttk.LabelFrame(right_panel, text="Ventas y activación", padding=14, style="Card.TLabelframe")
         checkout_frame.pack(fill=tk.X, pady=(0, 14))
@@ -1721,6 +2172,8 @@ class ModernOrganizadorGUI(tk.Tk):
             wraplength=620,
             justify=tk.LEFT,
         ).pack(anchor=tk.W)
+
+        self._crear_panel_facturas(right_panel)
 
         log_frame = ttk.LabelFrame(right_panel, text="Registro de actividad", padding=14, style="Card.TLabelframe")
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -1750,6 +2203,59 @@ class ModernOrganizadorGUI(tk.Tk):
             btn.grid(row=row, column=column, sticky="ew", padx=6, pady=6)
             self._buttons.append(btn)
 
+    def _crear_panel_facturas(self, parent):
+        invoice_frame = ttk.LabelFrame(parent, text="Extractor de facturas", padding=14, style="Card.TLabelframe")
+        invoice_frame.pack(fill=tk.BOTH, expand=False, pady=(0, 14))
+        invoice_frame.columnconfigure(0, weight=1)
+        invoice_frame.rowconfigure(1, weight=1)
+
+        actions = ttk.Frame(invoice_frame)
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        for text, command in [
+            ("Seleccionar facturas", self.seleccionar_facturas),
+            ("Analizar carpeta", self.seleccionar_carpeta_facturas),
+            ("Exportar CSV", self.exportar_facturas_csv),
+            ("Limpiar", self.limpiar_facturas_extraidas),
+        ]:
+            button = ttk.Button(actions, text=text, command=command, style="Secondary.TButton")
+            button.pack(side=tk.LEFT, padx=(0, 8))
+            self._buttons.append(button)
+            self._invoice_buttons.append(button)
+
+        columns = ("archivo", "proveedor", "numero", "fecha", "nit", "total", "estado")
+        table_frame = ttk.Frame(invoice_frame)
+        table_frame.grid(row=1, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
+        self.invoice_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=7)
+        headings = {
+            "archivo": "Archivo",
+            "proveedor": "Proveedor",
+            "numero": "Factura",
+            "fecha": "Fecha",
+            "nit": "NIT/ID",
+            "total": "Total",
+            "estado": "Estado",
+        }
+        widths = {
+            "archivo": 150,
+            "proveedor": 160,
+            "numero": 90,
+            "fecha": 80,
+            "nit": 100,
+            "total": 90,
+            "estado": 70,
+        }
+        for column in columns:
+            self.invoice_tree.heading(column, text=headings[column])
+            self.invoice_tree.column(column, width=widths[column], minwidth=60, stretch=column in {"archivo", "proveedor"})
+        self.invoice_tree.grid(row=0, column=0, sticky="nsew")
+        self.invoice_tree.bind("<Double-1>", self._mostrar_detalle_factura)
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.invoice_tree.yview)
+        self.invoice_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
     def _crear_selector_directorio(self, parent, label, variable, command):
         ttk.Label(parent, text=label, font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(0, 6))
         row = ttk.Frame(parent)
@@ -1775,16 +2281,37 @@ class ModernOrganizadorGUI(tk.Tk):
         self._left_scroll_canvas.itemconfigure(self._left_scroll_window, width=event.width)
 
     def _activar_scroll_panel_izquierdo(self, _event=None):
-        self.bind_all("<MouseWheel>", self._scroll_panel_izquierdo_mousewheel)
+        self._scroll_activo_canvas = self._left_scroll_canvas
+        self.bind_all("<MouseWheel>", self._scroll_panel_mousewheel)
 
     def _desactivar_scroll_panel_izquierdo(self, _event=None):
+        self._scroll_activo_canvas = None
         self.unbind_all("<MouseWheel>")
 
-    def _scroll_panel_izquierdo_mousewheel(self, event):
-        if self._left_scroll_canvas is None:
+    def _actualizar_scroll_panel_derecho(self, _event=None):
+        if self._right_scroll_canvas is None:
+            return
+        self._right_scroll_canvas.configure(scrollregion=self._right_scroll_canvas.bbox("all"))
+
+    def _ajustar_ancho_panel_derecho(self, event):
+        if self._right_scroll_canvas is None or self._right_scroll_window is None:
+            return
+        self._right_scroll_canvas.itemconfigure(self._right_scroll_window, width=event.width)
+
+    def _activar_scroll_panel_derecho(self, _event=None):
+        self._scroll_activo_canvas = self._right_scroll_canvas
+        self.bind_all("<MouseWheel>", self._scroll_panel_mousewheel)
+
+    def _desactivar_scroll_panel_derecho(self, _event=None):
+        self._scroll_activo_canvas = None
+        self.unbind_all("<MouseWheel>")
+
+    def _scroll_panel_mousewheel(self, event):
+        canvas = self._scroll_activo_canvas
+        if canvas is None:
             return
         delta = -1 if event.delta > 0 else 1
-        self._left_scroll_canvas.yview_scroll(delta, "units")
+        canvas.yview_scroll(delta, "units")
 
     def actualizar_estado_licencia(self):
         state = self.license_manager.state
@@ -2084,6 +2611,171 @@ class ModernOrganizadorGUI(tk.Tk):
         self.texto_log.delete("1.0", tk.END)
         self.log("Registro limpiado.", "info")
 
+    def seleccionar_facturas(self):
+        if not self._asegurar_acceso():
+            return
+        paths = filedialog.askopenfilenames(
+            title="Seleccionar facturas",
+            filetypes=[
+                ("Facturas e imagenes", "*.pdf *.png *.jpg *.jpeg *.bmp *.tiff *.webp *.txt *.csv *.xml"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if paths:
+            self._iniciar_extraccion_facturas([Path(path) for path in paths])
+
+    def seleccionar_carpeta_facturas(self):
+        if not self._asegurar_acceso():
+            return
+        folder = filedialog.askdirectory(title="Seleccionar carpeta de facturas")
+        if not folder:
+            return
+        files = []
+        for root, _dirnames, filenames in os.walk(folder):
+            for filename in filenames:
+                path = Path(root) / filename
+                if self.invoice_extractor.is_supported(path):
+                    files.append(path)
+        files.sort(key=lambda path: str(path).lower())
+        if not files:
+            messagebox.showinfo("Sin facturas", "No se encontraron archivos compatibles en esa carpeta.")
+            return
+        self._iniciar_extraccion_facturas(files)
+
+    def _iniciar_extraccion_facturas(self, paths):
+        supported_paths = [Path(path) for path in paths if self.invoice_extractor.is_supported(path)]
+        if not supported_paths:
+            messagebox.showinfo("Sin archivos compatibles", "Selecciona facturas en PDF digital, imagen o texto.")
+            return
+
+        self.limpiar_facturas_extraidas(confirm=False)
+        self.progreso["maximum"] = len(supported_paths)
+        self.progreso["value"] = 0
+        self._cambiar_estado_botones_facturas("disabled")
+        self.log(f"Extractor de facturas: {len(supported_paths)} archivo(s) en cola.", "info")
+        thread = threading.Thread(target=self._ejecutar_extraccion_facturas, args=(supported_paths,), daemon=True)
+        thread.start()
+
+    def _ejecutar_extraccion_facturas(self, paths):
+        for index, path in enumerate(paths, start=1):
+            result = self.invoice_extractor.extract(path)
+            self.after(0, self._agregar_factura_extraida, result)
+            self.after(0, self._actualizar_progreso_facturas, index)
+        self.after(0, self._finalizar_extraccion_facturas, len(paths))
+
+    def _agregar_factura_extraida(self, result):
+        self.invoice_results.append(result)
+        if self.invoice_tree is None:
+            return
+        iid = str(len(self.invoice_results) - 1)
+        self.invoice_tree.insert(
+            "",
+            tk.END,
+            iid=iid,
+            values=(
+                result.get("archivo", ""),
+                result.get("proveedor", ""),
+                result.get("numero", ""),
+                result.get("fecha", ""),
+                result.get("nit", ""),
+                result.get("total", ""),
+                result.get("estado", ""),
+            ),
+        )
+
+    def _actualizar_progreso_facturas(self, value):
+        self.progreso["value"] = value
+
+    def _finalizar_extraccion_facturas(self, total):
+        ok_count = sum(1 for result in self.invoice_results if result.get("estado") == "ok")
+        partial_count = sum(1 for result in self.invoice_results if result.get("estado") == "parcial")
+        error_count = max(total - ok_count - partial_count, 0)
+        self._cambiar_estado_botones_facturas("normal")
+        self.log(
+            f"Extractor finalizado: {ok_count} ok, {partial_count} parcial(es), {error_count} sin texto/error.",
+            "exito" if ok_count else "advertencia",
+        )
+        messagebox.showinfo(
+            "Extraccion finalizada",
+            f"Facturas revisadas: {total}\n"
+            f"Completas: {ok_count}\n"
+            f"Parciales: {partial_count}\n"
+            f"Sin texto o error: {error_count}",
+        )
+
+    def exportar_facturas_csv(self):
+        if not self.invoice_results:
+            messagebox.showinfo("Sin datos", "Primero extrae informacion de una o varias facturas.")
+            return
+        output_path = filedialog.asksaveasfilename(
+            title="Exportar facturas",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+        )
+        if not output_path:
+            return
+        fields = ("archivo", "ruta", "proveedor", "numero", "fecha", "nit", "email", "subtotal", "iva", "total", "confianza", "estado")
+        try:
+            with open(output_path, "w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                for result in self.invoice_results:
+                    writer.writerow({field: result.get(field, "") for field in fields})
+        except OSError as exc:
+            messagebox.showerror("No se pudo exportar", str(exc))
+            return
+        self.log(f"Facturas exportadas a CSV: {output_path}", "exito")
+        messagebox.showinfo("CSV exportado", "La informacion extraida fue exportada correctamente.")
+
+    def limpiar_facturas_extraidas(self, confirm=True):
+        if confirm and self.invoice_results and not messagebox.askyesno("Limpiar facturas", "Deseas limpiar los resultados extraidos?"):
+            return
+        self.invoice_results = []
+        if self.invoice_tree is not None:
+            for item in self.invoice_tree.get_children():
+                self.invoice_tree.delete(item)
+        if hasattr(self, "progreso"):
+            self.progreso["value"] = 0
+
+    def _mostrar_detalle_factura(self, _event=None):
+        if self.invoice_tree is None:
+            return
+        selected = self.invoice_tree.selection()
+        if not selected:
+            return
+        try:
+            result = self.invoice_results[int(selected[0])]
+        except (ValueError, IndexError):
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Detalle de factura")
+        dialog.transient(self)
+        dialog.geometry(f"760x520+{self.winfo_rootx() + 90}+{self.winfo_rooty() + 70}")
+        wrapper = ttk.Frame(dialog, padding=14)
+        wrapper.pack(fill=tk.BOTH, expand=True)
+
+        summary = (
+            f"Archivo: {result.get('archivo', '')}\n"
+            f"Proveedor: {result.get('proveedor', '')}\n"
+            f"Factura: {result.get('numero', '')}\n"
+            f"Fecha: {result.get('fecha', '')}\n"
+            f"NIT/ID: {result.get('nit', '')}\n"
+            f"Subtotal: {result.get('subtotal', '')} | IVA: {result.get('iva', '')} | Total: {result.get('total', '')}\n"
+            f"Confianza: {result.get('confianza', '')} | Estado: {result.get('estado', '')}\n"
+            f"Ruta: {result.get('ruta', '')}\n"
+        )
+        ttk.Label(wrapper, text=summary, justify=tk.LEFT, wraplength=720).pack(fill=tk.X, anchor=tk.W, pady=(0, 8))
+        text_box = scrolledtext.ScrolledText(wrapper, height=16, font=("Consolas", 9), wrap=tk.WORD)
+        text_box.pack(fill=tk.BOTH, expand=True)
+        text_box.insert(tk.END, result.get("texto", ""))
+        text_box.configure(state="disabled")
+        ttk.Button(wrapper, text="Cerrar", command=dialog.destroy, style="Secondary.TButton").pack(anchor=tk.E, pady=(10, 0))
+
+    def _cambiar_estado_botones_facturas(self, estado):
+        for button in self._invoice_buttons:
+            button.state(["disabled"] if estado == "disabled" else ["!disabled"])
+
     def comprar_licencia(self):
         plan_links = self._plan_links()
         plans = self._sort_plan_codes(plan_links.keys())
@@ -2102,7 +2794,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if not email:
             return
 
-        default_plan = DEFAULT_SUBSCRIPTION_PLAN_CODE if DEFAULT_SUBSCRIPTION_PLAN_CODE in plan_links else plans[0]
+        default_plan = self._default_plan_freq_code(plan_links, plans)
         plan_code = self._elegir_plan(plans, default_plan)
         if not plan_code:
             return
@@ -2113,36 +2805,27 @@ class ModernOrganizadorGUI(tk.Tk):
             )
             return
 
-        plan_name = self._nombre_plan(plan_code)
+        plan_base, plan_freq = self._dividir_plan_frecuencia(plan_code)
+        plan_name = self._nombre_plan(plan_base)
         access_mode = self.license_manager.local_unrestricted_access_mode()
         if access_mode == "owner":
             machine_name = self.license_manager.get_machine_name() or "este equipo"
-            self.log(f"El equipo propietario {machine_name} ya tiene acceso completo. No hace falta comprar el plan {plan_code}.", "info")
+            self.log(f"El equipo propietario {machine_name} ya tiene acceso completo. No hace falta comprar el plan {plan_base}.", "info")
             messagebox.showinfo(
                 "Equipo propietario",
                 f"Este equipo ({machine_name}) ya tiene todas las funciones desbloqueadas.\n\nNo hace falta comprar ni activar una licencia aquí.",
             )
             return
         if access_mode == "developer":
-            self.log(f"Simulación de compra en modo desarrollador para {email}. Plan {plan_code}.", "info")
+            self.log(f"Simulación de compra en modo desarrollador para {email}. Plan {plan_base} ({plan_freq}).", "info")
             messagebox.showinfo(
                 "Modo desarrollador",
-                f"Prueba local completada.\n\nCorreo: {email}\nPlan: {plan_name}\n\nNo se abrirá Mercado Pago ni se realizará un cobro real.",
-            )
-            return
-
-        try:
-            self.api_client.health_check()
-        except LicensingError as exc:
-            self.log("El servicio de licencias no esta disponible; se cancelo la apertura del pago.", "error")
-            messagebox.showerror(
-                "Compra no disponible",
-                f"No se abrira Mercado Pago porque la app no puede conectar con el servicio de licencias.\n\n{exc}",
+                f"Prueba local completada.\n\nCorreo: {email}\nPlan: {plan_name} ({plan_freq})\n\nNo se abrirá Mercado Pago ni se realizará un cobro real.",
             )
             return
 
         checkout_url = plan_links[plan_code]
-        self.license_manager.remember_pending_subscription(email, plan_code)
+        self.license_manager.remember_pending_subscription(email, plan_base)
         self.actualizar_estado_licencia()
         self.log(f"Link de plan local listo para {email}. Plan {plan_code}.", "info")
         if checkout_url:
@@ -2153,38 +2836,6 @@ class ModernOrganizadorGUI(tk.Tk):
                 "Usa el mismo correo que acabas de escribir para completar tu compra.\n\n"
                 "Cuando termines, vuelve a la app y tu licencia se revisará automáticamente.",
             )
-
-    def activar_licencia(self):
-        email = self._pedir_correo_confirmado(
-            "Activar licencia",
-            "Escribe el mismo correo con el que hiciste la compra para activar esta licencia.",
-        )
-        if not email:
-            return
-        license_key = simpledialog.askstring("Activar licencia", "Clave de licencia:", parent=self)
-        if not license_key:
-            return
-        try:
-            response = self.api_client.activate_license(email, license_key, self.license_manager.get_device_id())
-        except LicensingError as exc:
-            messagebox.showerror("No fue posible activar", str(exc))
-            return
-
-        if response.get("status") == "active":
-            self.license_manager.activate_local(
-                email,
-                license_key,
-                subscription_id=response.get("subscription_id", ""),
-                subscription_plan_code=response.get("plan_code", self.license_manager.state.get("subscription_plan_code", "")),
-                subscription_expires_at=response.get("next_payment_date", ""),
-            )
-            self.actualizar_estado_licencia()
-            self._mostrar_avisos_licencia()
-            self.log("Licencia activada correctamente.", "exito")
-            messagebox.showinfo("Licencia activada", "La app quedó activada en este equipo.")
-            return
-
-        messagebox.showwarning("Licencia no válida", response.get("message", "No se pudo activar la licencia."))
 
     def verificar_licencia(self):
         access_mode = self.license_manager.local_unrestricted_access_mode()
@@ -2213,7 +2864,22 @@ class ModernOrganizadorGUI(tk.Tk):
             if pending_email and pending_plan_code:
                 self._verificar_suscripcion_pendiente(pending_email, pending_plan_code)
             else:
-                messagebox.showinfo("Sin licencia local", "Todavía no hay una licencia local guardada en esta app.")
+                plan_links = self._plan_links()
+                plans = self._sort_plan_codes(plan_links.keys())
+                if not plans:
+                    messagebox.showinfo("Sin licencia local", "Todavia no hay una licencia local guardada en esta app.")
+                    return
+                email = self._pedir_correo_confirmado(
+                    "Verificar compra",
+                    "Escribe el mismo correo con el que hiciste la compra para buscar tu licencia.",
+                )
+                if not email:
+                    return
+                default_plan = self._default_plan_freq_code(plan_links, plans)
+                plan_code = self._elegir_plan(plans, default_plan)
+                if plan_code:
+                    plan_base, _freq = self._dividir_plan_frecuencia(plan_code)
+                    self._verificar_suscripcion_pendiente(email, plan_base)
             return
 
         try:

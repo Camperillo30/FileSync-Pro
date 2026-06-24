@@ -1,9 +1,11 @@
 ﻿{
+    "FILESYNC_PRO_SHEETS_URL":  "https://docs.google.com/spreadsheets/d/e/2PACX-1vQvh9IJdUCdyxIfAd3_Dx0PDr1Hm2_a0U5v2KoBG-MBNUO1U3wbZ6dld4rguHxExJlvCOce_uyQVb1X/pub?gid=0&single=true&output=csv",
+    "FILESYNC_PRO_API_URL":  "",
     "FILESYNC_PRO_DEFAULT_PLAN_CODE":  "basica",
     "MP_SUBSCRIPTION_LINK_MAP":  {
-                                     "basica":  "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=1e1c97ccb30e4f60a44908870323dcef",
-                                     "pro":  "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=7dba4d5ff8f44a5183af6e122c8eab79",
-                                     "premium":  "https://www.mercadopago.com.co/subscriptions/checkout?preapproval_plan_id=1d5fb85741ac4454a871e6f2d5870f4"
+                                     "basica_mensual":  "https://checkout.wompi.co/l/OGGnbk",
+                                     "pro_mensual":  "https://checkout.wompi.co/l/s3hr0u",
+                                     "premium_mensual":  "https://checkout.wompi.co/l/EaEBdi"
                                  },
     "FILESYNC_PRO_OWNER_HOSTNAMES":  "DESKTOP-335GNPS",
     "FILESYNC_PRO_OWNER_DEVICE_IDS":  ""
