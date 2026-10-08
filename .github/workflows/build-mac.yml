@@ -1,0 +1,85 @@
+      name: Build macOS
+
+      # Compila FileSync Pro para Mac en los servidores de GitHub (no hace falta tener un Mac).
+      # Se ejecuta a mano (Actions > Build macOS > Run workflow) o al subir una etiqueta v*.
+      # Genera dos versiones porque PyInstaller no compila para otra arquitectura:
+      #   - arm64  -> Macs con Apple Silicon (M1 o posterior)
+      #   - x86_64 -> Macs con Intel
+      # Cada versión lleva dentro su propio Tesseract OCR (el de Homebrew de ese runner, con sus bibliotecas
+      # reubicadas por tools/bundle_tesseract_mac.py), y al final se comprueba que funciona sin Homebrew.
+      on:
+        workflow_dispatch:
+        push:
+          tags: ["v*"]
+
+      jobs:
+        build:
+          strategy:
+            fail-fast: false
+            matrix:
+              include:
+                - runner: macos-latest
+                  arch: arm64
+                - runner: macos-15-intel
+                  arch: x86_64
+          runs-on: ${{ matrix.runner }}
+          timeout-minutes: 30
+          steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-python@v5
+              with:
+                python-version: "3.13"
+
+            - name: Comprobar Python, Tk y arquitectura
+              run: |
+                python -c "import platform, tkinter; print(platform.machine(), 'Tk', tkinter.TkVersion); assert tkinter.TkVersion >= 8.6"
+
+            - name: Instalar dependencias y correr las pruebas
+              run: |
+                python -m pip install --upgrade pip
+                python -m pip install -r requirements-desktop.txt pytest
+                python -m pytest
+
+            - name: Comprobar el UUID de hardware (licencias en Mac)
+              run: |
+                python -c "from filesync_core.platform_compat import mac_hardware_uuid; u = mac_hardware_uuid(); print(u); assert u"
+
+            - name: Abrir la ventana real 3 segundos (prueba de humo)
+              env:
+                FILESYNC_PRO_DEV_MODE: "1"
+              run: |
+                python -c "import Organizador as O; app = O.ModernOrganizadorGUI(); app.after(3000, app.destroy); app.mainloop(); print('La ventana abrio y cerro sin errores')"
+
+            - name: Instalar Tesseract (se copia dentro de la app)
+              run: |
+                brew install tesseract
+                tesseract --version
+                lipo -archs "$(brew --prefix)/bin/tesseract"
+
+            - name: Construir FileSync Pro.app, .zip y .dmg
+              run: bash build_mac.sh
+              env:
+                PYTHON_BIN: python
+
+            - name: Verificar el Tesseract empaquetado (sin Homebrew)
+              run: |
+                python tools/bundle_tesseract_mac.py --verify "dist/FileSync Pro.app"
+                # Se copia la app a otra carpeta y se quita Tesseract de Homebrew: solo puede funcionar el empaquetado.
+                mkdir -p "$RUNNER_TEMP/otra ubicacion"
+                ditto "dist/FileSync Pro.app" "$RUNNER_TEMP/otra ubicacion/FileSync Pro.app"
+                brew uninstall --ignore-dependencies tesseract leptonica libarchive || true
+                if command -v tesseract; then echo "Tesseract sigue instalado"; exit 1; fi
+                "$RUNNER_TEMP/otra ubicacion/FileSync Pro.app/Contents/MacOS/FileSync Pro" --ocr-selftest "$RUNNER_TEMP/ocr.txt" || true
+                cat "$RUNNER_TEMP/ocr.txt"
+                grep -q "resultado=OK" "$RUNNER_TEMP/ocr.txt"
+                grep -q "Contents/Frameworks/tesseract/tesseract" "$RUNNER_TEMP/ocr.txt"
+                codesign --verify --deep --strict "$RUNNER_TEMP/otra ubicacion/FileSync Pro.app"
+
+            - uses: actions/upload-artifact@v4
+              with:
+                name: FileSync-Pro-macOS-${{ matrix.arch }}
+                path: |
+                  dist/FileSync-Pro-macOS.zip
+                  dist/FileSync-Pro-macOS.dmg
+                if-no-files-found: error
