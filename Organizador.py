@@ -20,10 +20,13 @@ hace cada parte (buscar la clase/función por nombre para ir directo):
 - `ProcessRecoveryManager`: permite que, si la app se cierra a mitad de una
   organización de archivos, la próxima vez se pueda continuar donde quedó
   (guarda un "manifiesto" y un "diario" de lo ya procesado).
-- `LegacySheetsLicenseClient` y `LicenseApiClient`: dos formas de consultar
-  si una licencia es válida — la primera lee un CSV publicado de Google
-  Sheets (flujo antiguo con Make), la segunda habla con el backend propio
-  (`backend_app.py`) por HTTP. Cuál se usa depende de la configuración.
+- `MakeCodeLicenseClient`: el cliente de licencias que usa la app hoy. El
+  cliente escribe su correo y el código de activación que le llegó tras
+  pagar en Wompi; el código se canjea contra un webhook de Make, que lo
+  liga a un solo equipo y responde con una firma que la app verifica.
+- `LegacySheetsLicenseClient` y `LicenseApiClient`: formas anteriores de
+  consultar si una licencia es válida (CSV público de Google Sheets y
+  backend propio `backend_app.py`). Quedan en el archivo pero ya no se usan.
 - `ModernOrganizadorGUI`: la ventana principal (hereda de `tk.Tk`). Aquí
   vive toda la interfaz: botones, pestañas, el tutorial guiado, el flujo de
   compra/activación de licencia, y el hilo en segundo plano que organiza los
@@ -40,6 +43,7 @@ import ctypes
 import csv
 import datetime as dt
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -467,7 +471,11 @@ TEMA_OSCURO = {
     "scrollbar_trough": "#1a232c",
 }
 DEFAULT_API_BASE_URL = os.getenv("FILESYNC_PRO_API_URL", "https://hook.us2.make.com/jni71fawwtsudjo58qm82jy8l3hlr5un").strip()
-SHEETS_LICENSE_URL = os.getenv("FILESYNC_PRO_LICENSE_CSV_URL", "").strip()
+SHEETS_LICENSE_URL = os.getenv("FILESYNC_PRO_LICENSE_CSV_URL", "").strip()  # Flujo antiguo (ya no se usa por defecto).
+# Licencias por código de activación (Make): URL del webhook de canje y secreto con el que Make firma
+# cada respuesta. Ambos viajan en desktop_runtime_config.json (lo genera build.ps1 desde el .env).
+LICENSE_REDEEM_URL = os.getenv("FILESYNC_PRO_LICENSE_REDEEM_URL", "").strip()
+LICENSE_SIGNING_SECRET = os.getenv("FILESYNC_PRO_LICENSE_SIGNING_SECRET", "").strip()
 DEFAULT_PLAN_CODE = "basica"
 DEFAULT_SUBSCRIPTION_PLAN_CODE = os.getenv("FILESYNC_PRO_DEFAULT_PLAN_CODE", DEFAULT_PLAN_CODE).strip().lower() or DEFAULT_PLAN_CODE
 DEV_MODE_ENABLED = os.getenv("FILESYNC_PRO_DEV_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -2224,7 +2232,7 @@ class LegacySheetsLicenseClient:
             "subscription_id": f"sheets:{email.lower()}",
         }
 
-    def validate_license(self, email, license_key, device_id):
+    def validate_license(self, email, license_key, device_id, force=False):
         """Re-verifica en el Sheet que la suscripción siga activa."""
         row = self._find_row(email)
         if row is None:
@@ -2330,7 +2338,7 @@ class LicenseApiClient:
             "email": email, "activation_code": activation_code, "device_id": device_id,
         })
 
-    def validate_license(self, email, license_key, device_id):
+    def validate_license(self, email, license_key, device_id, force=False):
         """Verifica que la licencia siga activa en este dispositivo."""
         return self._request("POST", "/v1/licenses/validate", {
             "email": email, "license_key": license_key, "device_id": device_id,
@@ -2342,6 +2350,257 @@ class LicenseApiClient:
         por el flujo explícito de activación con código."""
         # Activation is deliberately never inferred from an email address.
         return {"status": "activation_required", "email": email, "plan_code": plan_code}
+
+
+class MakeCodeLicenseClient:
+    """Cliente de licencias por código de activación, respaldado por Make.
+
+    Flujo completo:
+    1. El cliente paga en Wompi. El escenario de Make "FileSync Pro y
+       CipherVault - Proceso" valida la firma de Wompi, crea la licencia en el
+       data store `CipherVault_codigos` y envía por correo un código de 16
+       caracteres. Solo guarda el *hash* del código (nunca el código).
+    2. En la app, el cliente escribe su correo y el código ("Verificar
+       licencia"). Este cliente calcula `sha256(código|correo)` y lo manda al
+       webhook "Canje de codigo" junto con el identificador del equipo y un
+       `nonce` aleatorio.
+    3. Make liga el código al primer equipo que lo canjea (un código = un
+       equipo) y responde con los datos de la licencia más una firma
+       `sha256(código_hash|equipo|nonce|plan|referencia|meses|creado|secreto)`.
+       La app verifica esa firma antes de creer la respuesta.
+
+    Renovación: cada pago nuevo del mismo correo actualiza `created_at` en el
+    data store (Make). La licencia vence 30 días después de `created_at`. La app
+    solo vuelve a preguntar a Make cuando faltan `RENEWAL_WINDOW_DAYS` días o
+    menos (o ya venció), y no más de una vez cada `MIN_RECHECK_HOURS` horas:
+    cada consulta gasta operaciones del plan de Make, así que no se consulta
+    cada vez que se abre la app.
+
+    Los códigos de FileSync Pro se distinguen de los de CipherVault porque su
+    plan empieza con "fs-" (fs-basica, fs-pro, fs-premium).
+    """
+
+    PLAN_PREFIX = "fs-"
+    SUBSCRIPTION_DAYS = 30  # Días de licencia por cada "mes" pagado.
+    RENEWAL_WINDOW_DAYS = 2  # Desde cuántos días antes de vencer se empieza a consultar.
+    MIN_RECHECK_HOURS = 12  # Mínimo entre dos consultas automáticas.
+    # Make guarda `created_at` en hora de Bogotá (UTC-5, Colombia no tiene horario de verano).
+    SERVER_TZ = dt.timezone(dt.timedelta(hours=-5))
+
+    _CONNECTION_MSG = (
+        "No pudimos conectar con el servicio de licencias en este momento.\n\n"
+        "Verifica tu conexión a internet e inténtalo nuevamente."
+    )
+    _NO_URL_MSG = (
+        "El servicio de licencias no está configurado en esta instalación.\n\n"
+        "Contacta al soporte para obtener asistencia."
+    )
+    _BAD_SIGNATURE_MSG = (
+        "La respuesta del servicio de licencias no pudo verificarse.\n\n"
+        "Actualiza la app a la última versión o contacta al soporte."
+    )
+    _ERROR_MESSAGES = {
+        "invalid": (
+            "Ese código no es válido para este correo.\n\n"
+            "Revisa que escribiste el mismo correo con el que pagaste en Wompi y que copiaste el código completo."
+        ),
+        "used": (
+            "Ese código ya está activado en otro equipo.\n\n"
+            "Cada código sirve para un solo equipo. Escríbenos si necesitas cambiarlo de equipo."
+        ),
+        "other_app": "Ese código no corresponde a FileSync Pro.",
+    }
+
+    def __init__(self, redeem_url, signing_secret, state_provider=None):
+        self.redeem_url = (redeem_url or "").strip()
+        self.signing_secret = (signing_secret or "").strip()
+        # Función que devuelve el estado local de licencia (dict de LicenseManager).
+        # Sirve para decidir si hace falta consultar a Make o basta lo guardado.
+        self._state_provider = state_provider
+
+    # --- utilidades de código ---
+
+    @staticmethod
+    def normalize_code(code):
+        """Deja el código en mayúsculas y sin guiones ni espacios (el correo lo
+        muestra como XXXX-XXXX-XXXX-XXXX, pero Make lo guarda de corrido)."""
+        return re.sub(r"[^0-9A-Za-z]", "", str(code or "")).upper()
+
+    @classmethod
+    def code_hash(cls, email, code):
+        """Misma fórmula que usa Make al emitir el código: sha256(código|correo)."""
+        raw = f"{cls.normalize_code(code)}|{str(email or '').strip().lower()}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def expiration_from(cls, created_at, meses):
+        """Fecha de vencimiento (ISO con zona horaria) a partir de `created_at`
+        (hora de Bogotá, texto "AAAA-MM-DDTHH:MM:SS") y de los meses pagados.
+        Devuelve "" si la fecha no se puede interpretar."""
+        try:
+            created = dt.datetime.strptime(str(created_at).strip()[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return ""
+        try:
+            months = max(int(float(str(meses).strip() or 1)), 1)
+        except ValueError:
+            months = 1
+        expires = created.replace(tzinfo=cls.SERVER_TZ) + dt.timedelta(days=cls.SUBSCRIPTION_DAYS * months)
+        return expires.isoformat()
+
+    # --- comunicación con Make ---
+
+    def _redeem(self, email, code, device_id, timeout=15):
+        """Canjea (o re-consulta) un código en Make. Devuelve un dict:
+        `{"ok": True, "plan_code", "expires_at", "reference", "code_hash", "code"}`
+        o `{"ok": False, "error": "invalid" | "used" | "other_app"}`.
+        Lanza `LicensingError` si no hay conexión, la respuesta no es JSON o la
+        firma no coincide."""
+        if not self.redeem_url or not self.signing_secret:
+            raise LicensingError(self._NO_URL_MSG)
+        normalized = self.normalize_code(code)
+        if len(normalized) != 16 or not str(email or "").strip() or not device_id:
+            # Un código mal copiado no vale la pena mandarlo (cada consulta gasta operaciones de Make).
+            return {"ok": False, "error": "invalid"}
+
+        code_hash = self.code_hash(email, normalized)
+        nonce = uuid.uuid4().hex
+        body = json.dumps({"v": 1, "code_hash": code_hash, "machine": device_id, "nonce": nonce}).encode("utf-8")
+        req = request.Request(
+            self.redeem_url, data=body, method="POST",
+            headers={"User-Agent": "FileSync-Pro/3", "Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except (error.URLError, error.HTTPError, OSError, ValueError) as exc:
+            raise LicensingError(self._CONNECTION_MSG) from exc
+        if not isinstance(data, dict):
+            raise LicensingError(self._CONNECTION_MSG)
+
+        if not data.get("ok"):
+            return {"ok": False, "error": str(data.get("error") or "invalid")}
+
+        plan = str(data.get("plan", ""))
+        reference = str(data.get("reference", ""))
+        meses = str(data.get("meses", ""))
+        created_at = str(data.get("created_at", ""))
+        signed = "|".join([code_hash, device_id, nonce, plan, reference, meses, created_at, self.signing_secret])
+        expected = hashlib.sha256(signed.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(expected, str(data.get("sig", "")).strip().lower()):
+            raise LicensingError(self._BAD_SIGNATURE_MSG)
+
+        if not plan.startswith(self.PLAN_PREFIX):
+            return {"ok": False, "error": "other_app"}
+        return {
+            "ok": True,
+            "plan_code": plan[len(self.PLAN_PREFIX):],
+            "expires_at": self.expiration_from(created_at, meses),
+            "reference": reference,
+            "code_hash": code_hash,
+            "code": normalized,
+        }
+
+    def _message_for(self, error_code):
+        return self._ERROR_MESSAGES.get(error_code, self._ERROR_MESSAGES["invalid"])
+
+    # --- interfaz común con los otros clientes de licencias ---
+
+    def warm_up(self):
+        """No-op: no hay servidor propio que despertar."""
+
+    def health_check(self, timeout=15):
+        """No hay un endpoint de salud; basta con que la URL esté configurada."""
+        return {"status": "ok" if self.redeem_url and self.signing_secret else "error"}
+
+    def resolve_subscription(self, email, plan_code):
+        """Con códigos, la licencia nunca se adivina a partir del correo: siempre
+        se pide el código (la app reacciona a `activation_required` mostrando el
+        diálogo para pegarlo)."""
+        return {"status": "activation_required", "email": email, "plan_code": plan_code}
+
+    def activate_license(self, email, activation_code, device_id):
+        """Canjea el código en este equipo. Si es el primer canje, Make lo liga
+        a `device_id`; si ya estaba ligado a este mismo equipo, responde igual."""
+        result = self._redeem(email, activation_code, device_id)
+        if not result["ok"]:
+            return {"status": "inactive", "message": self._message_for(result["error"])}
+        self._mark_checked()
+        return {
+            "status": "active",
+            "email": email,
+            "plan_code": result["plan_code"],
+            "license_key": result["code"],
+            "subscription_id": f"code:{result['code_hash'][:12]}",
+            "next_payment_date": result["expires_at"],
+        }
+
+    def validate_license(self, email, license_key, device_id, force=False):
+        """Revisa que la licencia siga vigente en este equipo. Con `force=False`
+        (revisión automática al abrir la app o al volver a la ventana) solo
+        consulta a Make cerca del vencimiento; con `force=True` (botón "Verificar
+        licencia") siempre consulta."""
+        if not force:
+            local = self._local_validation(email, license_key)
+            if local is not None:
+                return local
+        result = self._redeem(email, license_key, device_id)
+        if not result["ok"]:
+            return {"status": "inactive", "message": self._message_for(result["error"])}
+        self._mark_checked()
+        return {
+            "status": "active",
+            "email": email,
+            "plan_code": result["plan_code"],
+            "license_key": result["code"],
+            "subscription_id": f"code:{result['code_hash'][:12]}",
+            "next_payment_date": result["expires_at"],
+        }
+
+    # --- decidir si hace falta consultar a Make ---
+
+    def _state(self):
+        try:
+            state = self._state_provider() if self._state_provider else None
+        except Exception:  # noqa: BLE001 - el estado local nunca debe romper la validación
+            state = None
+        return state if isinstance(state, dict) else {}
+
+    def _mark_checked(self):
+        """Anota (en el estado en memoria; el que llama lo guarda con
+        `activate_local`/`set_validation_status`) cuándo se consultó a Make por
+        última vez, para no volver a consultar enseguida."""
+        state = self._state()
+        if state is not None and self._state_provider:
+            state["subscription_checked_at"] = dt.datetime.utcnow().isoformat()
+
+    def _local_validation(self, email, license_key):
+        """Devuelve la respuesta "activa" basada solo en lo guardado localmente,
+        o `None` si hace falta consultar a Make (no hay fecha guardada, falta
+        poco para vencer o ya venció, y no se consultó hace poco)."""
+        state = self._state()
+        expires = LicenseManager._parse_datetime(state.get("subscription_expires_at", ""))
+        if not expires:
+            return None
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=dt.UTC)
+        now = dt.datetime.now(dt.UTC)
+        if expires - now <= dt.timedelta(days=self.RENEWAL_WINDOW_DAYS):
+            checked = LicenseManager._parse_datetime(state.get("subscription_checked_at", ""))
+            if checked is None:
+                return None
+            if checked.tzinfo is None:
+                checked = checked.replace(tzinfo=dt.UTC)
+            if now - checked >= dt.timedelta(hours=self.MIN_RECHECK_HOURS):
+                return None
+        return {
+            "status": "active",
+            "email": email,
+            "plan_code": state.get("subscription_plan_code", ""),
+            "license_key": license_key,
+            "subscription_id": state.get("subscription_id", ""),
+            "next_payment_date": state.get("subscription_expires_at", ""),
+        }
 
 
 class ModernOrganizadorGUI(tk.Tk):
@@ -2375,7 +2634,11 @@ class ModernOrganizadorGUI(tk.Tk):
         # --- Los "servicios" de los que depende la ventana ---
         self.license_manager = LicenseManager()  # Estado de licencia guardado localmente.
         self.process_recovery = ProcessRecoveryManager()  # Reanudar organizaciones interrumpidas.
-        self.api_client = LegacySheetsLicenseClient(SHEETS_LICENSE_URL)  # Verificación de licencia contra Google Sheets.
+        # Licencias por código de activación canjeado en Make (ver `MakeCodeLicenseClient`).
+        self.api_client = MakeCodeLicenseClient(
+            LICENSE_REDEEM_URL, LICENSE_SIGNING_SECRET,
+            state_provider=lambda: self.license_manager.state,
+        )
         self.organizador = ModernOrganizadorArchivos()  # Lógica de categorías/fechas/duplicados.
         self.invoice_extractor = InvoiceExtractor()  # Lectura de facturas (pestaña "Facturas").
 
@@ -4619,8 +4882,8 @@ class ModernOrganizadorGUI(tk.Tk):
           (para poder probar el flujo completo en desarrollo).
         - Caso normal: guarda la intención de compra localmente
           ("pendiente") y abre el link de pago de Wompi en el navegador.
-          La confirmación real llega después, cuando Make registra el
-          pago y `_sincronizar_licencia_silenciosa` lo detecta.
+          La confirmación real llega por correo: Make registra el pago y
+          envía el código de activación, que se canjea en "Verificar licencia".
         """
         plan_links = self._plan_links()
         plans = self._sort_plan_codes(plan_links.keys())
@@ -4679,21 +4942,21 @@ class ModernOrganizadorGUI(tk.Tk):
                 "Suscripción iniciada",
                 "Se abrió Wompi en tu navegador.\n\n"
                 "Usa el mismo correo que acabas de escribir para completar tu compra.\n\n"
-                "Cuando termines, vuelve a la app y tu licencia se revisará automáticamente con Make.",
+                "Cuando termines, te llegará un correo con tu código de activación (revisa también spam).\n\n"
+                "Luego vuelve a la app, haz clic en \"Verificar licencia\", escribe ese mismo correo y pega el código.",
             )
 
     def verificar_licencia(self):
         """Botón "Verificar licencia": revisa el estado actual y decide
         qué hacer según el caso:
         - Equipo owner/developer: informa que ya tiene acceso completo.
-        - No hay licencia guardada localmente: si hay una compra
-          pendiente recordada en este equipo, intenta resolverla sola
-          (`_verificar_suscripcion_pendiente`); si no, pide SOLO el correo
-          (nada de plan — el plan real ya está en el Sheet, elegir uno acá
-          no cambiaba qué licencia se encontraba, solo agregaba un paso) y
-          busca con eso la compra.
-        - Ya hay una licencia guardada: la revalida contra el servidor y
-          actualiza el estado (activa o inválida) según la respuesta.
+        - No hay licencia guardada localmente: pide el correo con el que se
+          pagó en Wompi y luego el código de activación que llegó a ese
+          correo (`_verificar_suscripcion_pendiente`), y lo canjea en Make.
+        - Ya hay una licencia guardada: la revalida contra Make (siempre,
+          porque es una acción manual del usuario) y actualiza el estado.
+          Si ya venció, avisa que basta pagar el siguiente mes con el mismo
+          correo: Make renueva la misma licencia sin código nuevo.
         """
         access_mode = self.license_manager.local_unrestricted_access_mode()
         if access_mode == "owner":
@@ -4716,29 +4979,23 @@ class ModernOrganizadorGUI(tk.Tk):
 
         state = self.license_manager.state
         if not state.get("license_key") or not state.get("email"):
-            pending_email = state.get("subscription_email", "").strip()
-            pending_plan_code = state.get("subscription_plan_code", "").strip()
-            if pending_email and pending_plan_code:
-                self._verificar_suscripcion_pendiente(pending_email, pending_plan_code)
-            else:
-                email = self._pedir_correo_confirmado(
-                    "Verificar compra",
-                    "Escribe el mismo correo con el que hiciste la compra para buscar tu licencia.",
-                )
-                if not email:
-                    return
-                # Sin plan: se busca en el Sheet solo por correo. El plan real
-                # ya viene guardado ahí (lo puso Make al confirmar el pago), así
-                # que pedírselo al usuario aquí no cambiaba qué se encontraba —
-                # solo agregaba un paso. Ver `LegacySheetsLicenseClient._find_row`
-                # y `resolve_subscription`: con plan_code vacío, buscan por
-                # correo únicamente.
-                self._verificar_suscripcion_pendiente(email, "")
+            # Sin licencia guardada: se pide el correo con el que se pagó en Wompi y
+            # luego el código de activación que llegó a ese correo. El correo se pide
+            # siempre (no se reutiliza el de una compra "pendiente"): el código solo
+            # sirve con el correo exacto con el que se emitió.
+            email = self._pedir_correo_confirmado(
+                "Activar licencia",
+                "Escribe el mismo correo con el que pagaste en Wompi (el que recibió tu código de activación).",
+            )
+            if not email:
+                return
+            self._verificar_suscripcion_pendiente(email, "")
             return
 
         try:
+            # force=True: el botón manual siempre consulta a Make (la revisión automática no).
             response = self.api_client.validate_license(
-                state["email"], state["license_key"], self.license_manager.get_device_id()
+                state["email"], state["license_key"], self.license_manager.get_device_id(), force=True
             )
         except LicensingError as exc:
             messagebox.showerror("No fue posible validar", str(exc))
@@ -4754,6 +5011,15 @@ class ModernOrganizadorGUI(tk.Tk):
             )
             self.actualizar_estado_licencia()
             self._mostrar_avisos_licencia()
+            if self.license_manager.is_subscription_expired():
+                self.log("La licencia está vencida.", "advertencia")
+                messagebox.showwarning(
+                    "Licencia vencida",
+                    "Tu licencia venció y todavía no vemos un pago nuevo.\n\n"
+                    "Paga el siguiente mes en Wompi con el mismo correo (no recibirás un código nuevo): "
+                    "la licencia se renueva sola. Vuelve a pulsar \"Verificar licencia\" unos minutos después de pagar.",
+                )
+                return
             self.log("Licencia validada correctamente.", "exito")
             messagebox.showinfo("Licencia válida", "La licencia sigue activa en este equipo.")
         else:
@@ -4768,23 +5034,12 @@ class ModernOrganizadorGUI(tk.Tk):
             messagebox.showwarning("Licencia inválida", response.get("message", "La licencia ya no es válida."))
 
     def _verificar_suscripcion_pendiente(self, email, plan_code):
-        """Intenta activar la licencia automáticamente contra el servicio de
-        licencias (`resolve_subscription` — la misma consulta que ya hace
-        `_sincronizar_licencia_silenciosa` en segundo plano) y, solo si el
-        cliente configurado exige un código de activación explícito
-        (`status == "activation_required"`, el caso del backend propio
-        `LicenseApiClient`), lo pide con un diálogo y activa con él.
-
-        Antes este método se saltaba `resolve_subscription` por completo y
-        siempre pedía el código, sin importar qué cliente estuviera
-        configurado. Con `LegacySheetsLicenseClient` (el que usa la app hoy,
-        ver `ModernOrganizadorGUI.__init__`) nunca se emite ni se envía un
-        código de activación — la licencia se resuelve sola por correo+plan
-        contra el Google Sheet que sincroniza Make — así que el diálogo
-        dejaba a cualquier comprador real pidiéndole un código que jamás
-        iba a recibir. Este es el bug reportado: al comprador se le mostraba
-        el diálogo de código en vez de activarse solo, como sí hace la
-        sincronización silenciosa al abrir la app."""
+        """Activa la licencia de `email`. Primero consulta
+        `resolve_subscription`; con los clientes que resuelven la licencia
+        solos (flujo antiguo del Sheet) activa sin preguntar, y con el cliente
+        por código (`MakeCodeLicenseClient`, el que usa la app hoy) la respuesta
+        es `activation_required`: ahí se pide el código de activación que llegó
+        al correo y se canjea en Make, ligándolo a este equipo."""
         try:
             response = self.api_client.resolve_subscription(email, plan_code)
         except LicensingError as exc:
@@ -4825,7 +5080,8 @@ class ModernOrganizadorGUI(tk.Tk):
 
         activation_code = simpledialog.askstring(
             "Activar licencia",
-            "Pega el código de activación enviado tras confirmar tu pago.",
+            "Pega el código de activación que te enviamos por correo tras confirmar tu pago.\n\n"
+            "Sirve para un solo equipo.",
             parent=self,
         )
         if not activation_code:
