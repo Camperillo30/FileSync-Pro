@@ -74,13 +74,14 @@ if (Test-Path $localEnvPath) {
 }
 
 $embeddedDesktopConfig = [ordered]@{
-    FILESYNC_PRO_LICENSE_CSV_URL   = Get-ConfigValue -Key "FILESYNC_PRO_LICENSE_CSV_URL" -Default "https://docs.google.com/spreadsheets/d/e/2PACX-1vQvh9IJdUCdyxIfAd3_Dx0PDr1Hm2_a0U5v2KoBG-MBNUO1U3wbZ6dld4rguHxExJlvCOce_uyQVb1X/pub?gid=0&single=true&output=csv"
-    FILESYNC_PRO_DEFAULT_PLAN_CODE = Get-ConfigValue -Key "FILESYNC_PRO_DEFAULT_PLAN_CODE" -Default "basica"
-    WOMPI_SUBSCRIPTION_LINK_MAP   = Get-JsonObjectValue -RawValue (Get-ConfigValue -Key "WOMPI_SUBSCRIPTION_LINK_MAP" -Default "{}")
+    FILESYNC_PRO_LICENSE_REDEEM_URL     = Get-ConfigValue -Key "FILESYNC_PRO_LICENSE_REDEEM_URL" -Default "https://hook.us2.make.com/vm9homuf7aq7s6fbve9hdm55xub8o6gt"
+    FILESYNC_PRO_LICENSE_SIGNING_SECRET = Get-ConfigValue -Key "FILESYNC_PRO_LICENSE_SIGNING_SECRET"
+    FILESYNC_PRO_DEFAULT_PLAN_CODE      = Get-ConfigValue -Key "FILESYNC_PRO_DEFAULT_PLAN_CODE" -Default "basica"
+    WOMPI_SUBSCRIPTION_LINK_MAP         = Get-JsonObjectValue -RawValue (Get-ConfigValue -Key "WOMPI_SUBSCRIPTION_LINK_MAP" -Default "{}")
 }
 
-if ([string]::IsNullOrWhiteSpace($embeddedDesktopConfig.FILESYNC_PRO_LICENSE_CSV_URL)) {
-    Write-Warning "FILESYNC_PRO_LICENSE_CSV_URL está vacío. El ejecutable no podrá verificar licencias contra Google Sheets."
+if ([string]::IsNullOrWhiteSpace($embeddedDesktopConfig.FILESYNC_PRO_LICENSE_SIGNING_SECRET)) {
+    Write-Warning "FILESYNC_PRO_LICENSE_SIGNING_SECRET está vacío (agrégalo a tu .env). Sin él, el ejecutable no podrá activar ningún código de licencia."
 }
 
 $embeddedDesktopConfig | ConvertTo-Json -Depth 6 | Set-Content $desktopConfigPath -Encoding UTF8

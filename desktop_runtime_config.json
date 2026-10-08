@@ -1,5 +1,6 @@
 ﻿{
-    "FILESYNC_PRO_LICENSE_CSV_URL":  "https://docs.google.com/spreadsheets/d/e/2PACX-1vQvh9IJdUCdyxIfAd3_Dx0PDr1Hm2_a0U5v2KoBG-MBNUO1U3wbZ6dld4rguHxExJlvCOce_uyQVb1X/pub?gid=0\u0026single=true\u0026output=csv",
+    "FILESYNC_PRO_LICENSE_REDEEM_URL":  "https://hook.us2.make.com/vm9homuf7aq7s6fbve9hdm55xub8o6gt",
+    "FILESYNC_PRO_LICENSE_SIGNING_SECRET":  "3zfQbQTz7VNFCm9K0FHBLyUBI1pTQgtdgarhZZxz9kMybeVBhex",
     "FILESYNC_PRO_DEFAULT_PLAN_CODE":  "basica",
     "WOMPI_SUBSCRIPTION_LINK_MAP":  {
                                         "basica":  "https://checkout.wompi.co/l/i8Erwh",

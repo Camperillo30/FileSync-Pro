@@ -2,26 +2,28 @@
 
 Aplicación de escritorio en Tkinter para organizar archivos y extraer datos de facturas.
 
-## Licencias: Wompi, Make y Google Sheets
+## Licencias: Wompi, Make y código de activación
 
-El flujo de compra se mantiene simple:
+El flujo de compra:
 
-1. La app abre el enlace de pago de Wompi del plan elegido.
-2. Make registra el pago aprobado en la hoja de Google Sheets.
-3. La app consulta el CSV publicado de esa hoja y activa la licencia con el correo de compra.
+1. La app abre el enlace de pago de Wompi del plan elegido. El cliente paga con su correo.
+2. Wompi avisa a Make (webhook). El escenario **FileSync Pro y CipherVault - Proceso** valida la firma de Wompi, crea la licencia en el data store `CipherVault_codigos` y envía por correo un código de activación de 16 caracteres. Solo se guarda el hash del código (`sha256(código|correo)`).
+3. En la app: **Verificar licencia** → el cliente escribe el mismo correo y pega el código. El escenario **CipherVault - Canje de codigo** liga el código al primer equipo que lo usa (un código = un equipo) y responde con una firma que la app verifica con `FILESYNC_PRO_LICENSE_SIGNING_SECRET`.
+4. Renovación: cada pago nuevo del mismo correo extiende la licencia 30 días en Make (sin código nuevo). La app solo consulta a Make cuando faltan 2 días o menos para vencer (y no más de una vez cada 12 horas), porque cada consulta gasta operaciones del plan de Make.
 
-La hoja debe tener las columnas `email`, `plan`, `estado` y `fecha_pago`. Los valores activos aceptados son `activo`, `active` o `authorized`.
+Los códigos de FileSync Pro se guardan con plan `fs-basica`, `fs-pro` o `fs-premium`; los de CipherVault usan otros planes, así que no se pueden intercambiar.
 
-La configuración del ejecutable está en `desktop_runtime_config.json`:
+La configuración del ejecutable la genera `build.ps1` en `desktop_runtime_config.json` a partir de tu `.env`:
 
-```json
-{
-  "FILESYNC_PRO_LICENSE_CSV_URL": "https://docs.google.com/.../pub?...&output=csv",
-  "WOMPI_SUBSCRIPTION_LINK_MAP": {"basica": "...", "pro": "...", "premium": "..."}
-}
+```
+FILESYNC_PRO_LICENSE_REDEEM_URL=https://hook.us2.make.com/...   # webhook "Canje de codigo"
+FILESYNC_PRO_LICENSE_SIGNING_SECRET=...                         # el mismo secreto que firma las respuestas en Make
+WOMPI_SUBSCRIPTION_LINK_MAP={"basica": "...", "pro": "...", "premium": "..."}
 ```
 
-No compartas archivos `.env` con credenciales de Wompi o Make.
+`desktop_runtime_config.json` está en `.gitignore` porque puede llevar el secreto. No compartas archivos `.env` con credenciales de Wompi o Make.
+
+Para probar el flujo de Make de punta a punta (pago simulado → correo → canje → renovación) usa `tools/probar_licencias_make.py`.
 
 ## Uso
 
