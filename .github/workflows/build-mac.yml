@@ -1,9 +1,8 @@
       name: Build macOS
 
       # Compila FileSync Pro para Mac en los servidores de GitHub (no hace falta tener un Mac).
-      # Se ejecuta a mano (Actions > Build macOS > Run workflow). Si se marca "publicar", al final deja
-      # un BORRADOR de versión en Releases con los dos .dmg; ahí se agrega el instalador de Windows y se
-      # publica (ver README, "Publicar una versión").
+      # Se ejecuta a mano (Actions > Build macOS > Run workflow) para probar la versión de Mac.
+      # "Publicar versión" (release.yml) lo reutiliza para armar la versión que se publica en Releases.
       # Genera dos versiones porque PyInstaller no compila para otra arquitectura:
       #   - arm64  -> Macs con Apple Silicon (M1 o posterior)
       #   - x86_64 -> Macs con Intel
@@ -11,11 +10,7 @@
       # reubicadas por tools/bundle_tesseract_mac.py), y al final se comprueba que funciona sin Homebrew.
       on:
         workflow_dispatch:
-          inputs:
-            publicar:
-              description: "Crear un borrador de versión en Releases con los .dmg"
-              type: boolean
-              default: false
+        workflow_call:
 
       jobs:
         build:
@@ -147,37 +142,3 @@
                   dist/FileSync-Pro-macOS.zip
                   dist/FileSync-Pro-macOS.dmg
                 if-no-files-found: error
-
-        # Borrador de versión en Releases (solo si se marcó "publicar").
-        publicar:
-          needs: build
-          if: ${{ inputs.publicar }}
-          runs-on: ubuntu-latest
-          permissions:
-            contents: write
-          steps:
-            - uses: actions/checkout@v4
-
-            - uses: actions/download-artifact@v4
-              with:
-                path: artefactos
-
-            - name: Crear o actualizar el borrador de versión
-              env:
-                GH_TOKEN: ${{ github.token }}
-              run: |
-                VERSION="$(sed -n 's/^APP_VERSION *= *"\([^"]*\)".*/\1/p' Organizador.py | head -1)"
-                if [ -z "$VERSION" ]; then echo "::error::No se encontró APP_VERSION en Organizador.py"; exit 1; fi
-                TAG="v$VERSION"
-                # Nombres fijos: así los enlaces .../releases/latest/download/<nombre> no cambian entre versiones.
-                mkdir -p subir
-                cp artefactos/FileSync-Pro-macOS-arm64/FileSync-Pro-macOS.dmg subir/FileSync-Pro-macOS-AppleSilicon.dmg
-                cp artefactos/FileSync-Pro-macOS-x86_64/FileSync-Pro-macOS.dmg subir/FileSync-Pro-macOS-Intel.dmg
-                if gh release view "$TAG" >/dev/null 2>&1; then
-                  echo "La versión $TAG ya existe: se reemplazan sus .dmg."
-                else
-                  sed "s/{VERSION}/$VERSION/g" packaging/notas_version.md > notas.md
-                  gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "FileSync Pro $VERSION" --notes-file notas.md
-                fi
-                gh release upload "$TAG" subir/* --clobber
-                echo "Borrador listo: falta subir FileSync-Pro-Setup.exe (Windows) y darle Publish release." >> "$GITHUB_STEP_SUMMARY"

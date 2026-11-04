@@ -92,11 +92,17 @@ Para comprobar el OCR de un ejecutable ya compilado: `--ocr-selftest` (debe term
 
 ### Publicar una versión
 
-Los enlaces de *Descargar* apuntan siempre a la última versión publicada en Releases, con nombres de archivo fijos.
+Los enlaces de *Descargar* apuntan siempre a la última versión publicada en Releases (las *pre-release* no cuentan como "última"), con nombres de archivo fijos.
 
-1. Sube `APP_VERSION` en `Organizador.py` (por ejemplo a `3.2.0`) y compila en Windows con `.\build.ps1`.
-2. En GitHub: *Actions > Build macOS > Run workflow*, con **publicar** marcado. Compila los dos `.dmg` y deja un **borrador** de versión `v3.2.0` en Releases con ellos y con las notas de `packaging/notas_version.md`.
-3. Abre el borrador en *Releases*, arrastra `dist\FileSync-Pro-Setup.exe`, escribe las novedades y haz clic en **Publish release**.
+1. Sube `APP_VERSION` en `Organizador.py` (por ejemplo a `3.2.0`) y súbelo a GitHub.
+2. En GitHub: *Actions > Publicar versión > Run workflow*. Deja marcado **prerelease** para una versión de prueba, o desmárcalo para la definitiva.
+
+El flujo `.github/workflows/release.yml` compila en los servidores de GitHub, sin necesitar tu PC:
+
+- **Windows** (`windows-latest`): corre el mismo `build.ps1`, prueba el OCR del `.exe` e instala y desinstala el instalador en silencio.
+- **Mac** (arm64 e Intel): reutiliza *Build macOS*.
+
+Después publica `v<versión>` con los tres archivos y las notas de `packaging/notas_version.md`, que se pueden editar luego en *Releases*. Si la versión ya existía, reemplaza sus archivos.
 
 ### Firma de código
 

@@ -1,0 +1,132 @@
+name: Publicar versión
+
+# Compila FileSync Pro para Windows y para Mac en los servidores de GitHub y publica la versión en
+# Releases con tres archivos de nombre fijo:
+#   FileSync-Pro-Setup.exe                 (Windows 10/11, instalador)
+#   FileSync-Pro-macOS-AppleSilicon.dmg    (Mac M1 o posterior)
+#   FileSync-Pro-macOS-Intel.dmg           (Mac Intel)
+# La versión sale de APP_VERSION en Organizador.py (etiqueta v<versión>).
+# Se ejecuta a mano: Actions > Publicar versión > Run workflow.
+# Necesita el secret FILESYNC_PRO_RUNTIME_CONFIG (el JSON que genera build.ps1).
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "Publicar como pre-release (versión de prueba)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # pwsh (PowerShell 7): en Windows PowerShell 5.1 lo que pip o tesseract escriben en stderr se
+      # convierte en error dentro de GitHub Actions y detiene build.ps1.
+      - name: Instalar Tesseract OCR e Inno Setup
+        shell: pwsh
+        run: |
+          choco install tesseract innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco no pudo instalar Tesseract o Inno Setup." }
+
+      - name: Compilar el .exe y el instalador con build.ps1
+        shell: pwsh
+        env:
+          RUNTIME_CONFIG: ${{ secrets.FILESYNC_PRO_RUNTIME_CONFIG }}
+        run: |
+          if (-not $env:RUNTIME_CONFIG) { throw "Falta el secret FILESYNC_PRO_RUNTIME_CONFIG (Settings > Secrets and variables > Actions)." }
+          $cfg = $env:RUNTIME_CONFIG.Trim().TrimStart([char]0xFEFF) | ConvertFrom-Json
+          # build.ps1 lee primero las variables de entorno: es lo mismo que tener un .env.
+          $env:FILESYNC_PRO_LICENSE_REDEEM_URL = $cfg.FILESYNC_PRO_LICENSE_REDEEM_URL
+          $env:FILESYNC_PRO_LICENSE_SIGNING_SECRET = $cfg.FILESYNC_PRO_LICENSE_SIGNING_SECRET
+          if ($cfg.FILESYNC_PRO_DEFAULT_PLAN_CODE) { $env:FILESYNC_PRO_DEFAULT_PLAN_CODE = $cfg.FILESYNC_PRO_DEFAULT_PLAN_CODE }
+          $env:WOMPI_SUBSCRIPTION_LINK_MAP = ($cfg.WOMPI_SUBSCRIPTION_LINK_MAP | ConvertTo-Json -Compress)
+          # El entorno que usa build.ps1, creado con el Python 3.13 de setup-python.
+          python -m venv .venv313
+          .\build.ps1
+          if (-not (Test-Path "dist\FileSync-Pro-Setup.exe")) { throw "No se genero dist\FileSync-Pro-Setup.exe" }
+
+      - name: Probar el OCR incluido en el .exe
+        shell: pwsh
+        run: |
+          Start-Process -Wait -FilePath "dist\FileSync Pro.exe" -ArgumentList "--ocr-selftest", "$env:RUNNER_TEMP\ocr.txt"
+          Get-Content "$env:RUNNER_TEMP\ocr.txt"
+          if (-not (Select-String -Path "$env:RUNNER_TEMP\ocr.txt" -Pattern "resultado=OK" -Quiet)) { throw "El OCR incluido no funciona." }
+
+      - name: Probar el instalador (instalar y desinstalar en silencio)
+        shell: pwsh
+        run: |
+          $proc = Start-Process -Wait -PassThru -FilePath "dist\FileSync-Pro-Setup.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"
+          if ($proc.ExitCode -ne 0) { throw "El instalador termino con codigo $($proc.ExitCode)." }
+          $installed = Join-Path $env:LOCALAPPDATA "Programs\FileSync Pro\FileSync Pro.exe"
+          if (-not (Test-Path $installed)) { throw "El instalador no dejo la app en $installed" }
+          Write-Host "Instalada en: $installed"
+          $uninstaller = Get-ChildItem (Split-Path $installed) -Filter "unins*.exe" | Select-Object -First 1
+          $proc = Start-Process -Wait -PassThru -FilePath $uninstaller.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          if ($proc.ExitCode -ne 0) { throw "El desinstalador termino con codigo $($proc.ExitCode)." }
+          # El desinstalador se relanza desde una copia temporal: se espera a que termine de borrar.
+          for ($i = 0; $i -lt 30 -and (Test-Path $installed); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path $installed) { throw "La desinstalacion no quito la app." }
+          Write-Host "Instalar y desinstalar: OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FileSync-Pro-Windows
+          path: dist/FileSync-Pro-Setup.exe
+          if-no-files-found: error
+
+  mac:
+    uses: ./.github/workflows/build-mac.yml
+    secrets: inherit
+
+  publicar:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artefactos
+
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          VERSION="$(sed -n 's/^APP_VERSION *= *"\([^"]*\)".*/\1/p' Organizador.py | head -1)"
+          if [ -z "$VERSION" ]; then echo "::error::No se encontró APP_VERSION en Organizador.py"; exit 1; fi
+          TAG="v$VERSION"
+          # Nombres fijos: así los enlaces de descarga no cambian entre versiones.
+          mkdir -p subir
+          cp artefactos/FileSync-Pro-Windows/FileSync-Pro-Setup.exe subir/FileSync-Pro-Setup.exe
+          cp artefactos/FileSync-Pro-macOS-arm64/FileSync-Pro-macOS.dmg subir/FileSync-Pro-macOS-AppleSilicon.dmg
+          cp artefactos/FileSync-Pro-macOS-x86_64/FileSync-Pro-macOS.dmg subir/FileSync-Pro-macOS-Intel.dmg
+          ls -la subir
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "La versión $TAG ya existe: se reemplazan sus archivos."
+            gh release edit "$TAG" --prerelease="$PRERELEASE"
+          else
+            sed "s/{VERSION}/$VERSION/g" packaging/notas_version.md > notas.md
+            FLAGS=()
+            if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); else FLAGS+=(--latest); fi
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "FileSync Pro $VERSION" --notes-file notas.md "${FLAGS[@]}"
+          fi
+          gh release upload "$TAG" subir/* --clobber
+          {
+            echo "### FileSync Pro $VERSION publicada"
+            echo
+            for f in subir/*; do n="$(basename "$f")"; echo "- https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$n"; done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -422,19 +422,33 @@ Invoke-CodeSign -Paths @($distExePath)
 # --- Instalador (Inno Setup) ---------------------------------------------------------------------
 $installerPath = $null
 if (-not $Dev -and -not $SkipInstaller) {
+    # Inno Setup 6 se instala en "Program Files (x86)" y el 7 en "Program Files". Se buscan las dos
+    # (con ProgramW6432, para que funcione aunque PowerShell sea de 32 bits), la carpeta por usuario,
+    # el registro de programas instalados y, si hace falta, FILESYNC_ISCC en el .env.
     $isccCandidates = New-Object System.Collections.Generic.List[string]
+    $isccConfigured = Get-ConfigValue -Key "FILESYNC_ISCC"
+    if ($isccConfigured) { $isccCandidates.Add($isccConfigured) }
     $isccOnPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     if ($isccOnPath) { $isccCandidates.Add($isccOnPath.Source) }
-    foreach ($root in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, (Join-Path $env:LOCALAPPDATA "Programs"))) {
+    $uninstallKeys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    Get-ItemProperty -Path $uninstallKeys -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -like "Inno Setup*" -and $_.InstallLocation } |
+        Sort-Object DisplayName -Descending |
+        ForEach-Object { $isccCandidates.Add((Join-Path $_.InstallLocation "ISCC.exe")) }
+    foreach ($root in @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA "Programs"))) {
         if (-not $root -or -not (Test-Path $root)) { continue }
         Get-ChildItem -Path $root -Directory -Filter "Inno Setup*" -ErrorAction SilentlyContinue |
             Sort-Object Name -Descending |
             ForEach-Object { $isccCandidates.Add((Join-Path $_.FullName "ISCC.exe")) }
     }
-    $isccPath = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $isccPath = $isccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 
     if (-not $isccPath) {
-        Write-Warning "No se encontro Inno Setup: se genero el .exe pero NO el instalador. Instalalo con: winget install JRSoftware.InnoSetup  (o usa -SkipInstaller para no ver este aviso)."
+        Write-Warning "No se encontro Inno Setup (ISCC.exe): se genero el .exe pero NO el instalador. Instalalo con: winget install JRSoftware.InnoSetup  -- o, si ya esta instalado, pon su ruta en el .env: FILESYNC_ISCC=C:\Program Files\Inno Setup 7\ISCC.exe  (o usa -SkipInstaller para no ver este aviso)."
     } else {
         $versionMatch = Select-String -Path (Join-Path $PWD "Organizador.py") -Pattern '^APP_VERSION\s*=\s*"([^"]+)"' | Select-Object -First 1
         if (-not $versionMatch) { throw "No se encontro APP_VERSION en Organizador.py." }
@@ -451,6 +465,7 @@ if (-not $Dev -and -not $SkipInstaller) {
             $isccArgs += @("/DSIGN", "/Sfsps=$innoSignCommand")
         }
         $isccArgs += (Join-Path $PWD "installer\FileSyncPro.iss")
+        Write-Host "Inno Setup: $isccPath"
         & $isccPath @isccArgs
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup no pudo generar el instalador." }
         $installerPath = Join-Path $PWD "dist\FileSync-Pro-Setup.exe"
