@@ -10,7 +10,7 @@ param(
     # Compila el ejecutable de DESARROLLADOR (todas las funciones sin licencia) que SOLO funciona
     # en este PC. Queda en dist_dev\FileSync Pro DEV.exe. Nunca lo distribuyas.
     [switch]$Dev,
-    # No genera el instalador (dist\FileSync-Pro-Setup-<version>.exe), solo el .exe.
+    # No genera el instalador (dist\FileSync-Pro-Setup.exe), solo el .exe.
     # (La firma de codigo no tiene opcion: se hace sola si el .env trae un certificado.)
     [switch]$SkipInstaller
 )
@@ -453,7 +453,7 @@ if (-not $Dev -and -not $SkipInstaller) {
         $isccArgs += (Join-Path $PWD "installer\FileSyncPro.iss")
         & $isccPath @isccArgs
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup no pudo generar el instalador." }
-        $installerPath = Join-Path $PWD "dist\FileSync-Pro-Setup-$appVersion.exe"
+        $installerPath = Join-Path $PWD "dist\FileSync-Pro-Setup.exe"
         if (-not (Test-Path $installerPath)) { throw "No se genero el instalador esperado en $installerPath" }
         if ($Sign) {
             & $signToolPath verify /pa /q $installerPath | Out-Null

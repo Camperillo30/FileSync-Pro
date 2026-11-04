@@ -12,6 +12,16 @@
 
 ![FileSync Pro en modo claro](docs/captura-claro.png)
 
+## Descargar
+
+| Sistema | Descarga |
+| --- | --- |
+| Windows 10 u 11 | [FileSync-Pro-Setup.exe](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-Setup.exe) |
+| Mac con Apple Silicon (M1 o posterior) | [FileSync-Pro-macOS-AppleSilicon.dmg](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-AppleSilicon.dmg) |
+| Mac con Intel | [FileSync-Pro-macOS-Intel.dmg](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-Intel.dmg) |
+
+Todas las versiones y sus novedades están en [Releases](https://github.com/Camperillo30/FileSync-Pro/releases). La app incluye una demo gratis de 24 horas.
+
 ## Funciones
 
 - **Organización automática.** Clasifica por categoría (documentos, imágenes, video, audio, código, comprimidos...) y por año y mes. En las fotos usa la fecha EXIF cuando existe. Se puede usar la misma carpeta como origen y destino.
@@ -74,11 +84,19 @@ Para probar el `.exe` como desarrollador existe `.\build.ps1 -Dev`. Genera `dist
 
 `build.ps1` genera `desktop_runtime_config.json` a partir del `.env`, con la URL del servicio de activación, el secreto con que se firman sus respuestas, los links de pago y el plan por defecto. Lo embebe en `dist\FileSync Pro.exe`. Además prepara Tesseract en `vendor\tesseract` y lo adelgaza. Con `-SkipOcr` compila sin OCR y con `-NoSlim` deja Tesseract completo.
 
-Si está instalado [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 o superior (`winget install JRSoftware.InnoSetup`), también genera el instalador `dist\FileSync-Pro-Setup-<versión>.exe` a partir de `installer/FileSyncPro.iss`. El instalador no pide permisos de administrador, crea los accesos directos y aparece en «Agregar o quitar programas». Al desinstalar no se borran la licencia ni los datos del usuario. Con `-SkipInstaller` se omite. Al terminar muestra el SHA-256 del `.exe` y del instalador.
+Si está instalado [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 o superior (`winget install JRSoftware.InnoSetup`), también genera el instalador `dist\FileSync-Pro-Setup.exe` (nombre fijo, para que el enlace de descarga no cambie) a partir de `installer/FileSyncPro.iss`. El instalador no pide permisos de administrador, crea los accesos directos y aparece en «Agregar o quitar programas». Al desinstalar no se borran la licencia ni los datos del usuario. Con `-SkipInstaller` se omite. Al terminar muestra el SHA-256 del `.exe` y del instalador.
 
 **macOS:** `bash build_mac.sh` en un Mac, o sin Mac en *Actions > Build macOS > Run workflow*. El flujo arma la configuración desde el secret de Actions `FILESYNC_PRO_RUNTIME_CONFIG`, que contiene el mismo JSON que genera `build.ps1`. Compila las versiones arm64 y x86_64, corre las pruebas y una prueba de humo de la ventana, y comprueba que el OCR incluido funciona después de desinstalar Tesseract del runner. Sin firma de Apple, el primer arranque se aprueba a mano en *Ajustes del Sistema > Privacidad y seguridad > Abrir igualmente*.
 
 Para comprobar el OCR de un ejecutable ya compilado: `--ocr-selftest` (debe terminar en `resultado=OK`).
+
+### Publicar una versión
+
+Los enlaces de *Descargar* apuntan siempre a la última versión publicada en Releases, con nombres de archivo fijos.
+
+1. Sube `APP_VERSION` en `Organizador.py` (por ejemplo a `3.2.0`) y compila en Windows con `.\build.ps1`.
+2. En GitHub: *Actions > Build macOS > Run workflow*, con **publicar** marcado. Compila los dos `.dmg` y deja un **borrador** de versión `v3.2.0` en Releases con ellos y con las notas de `packaging/notas_version.md`.
+3. Abre el borrador en *Releases*, arrastra `dist\FileSync-Pro-Setup.exe`, escribe las novedades y haz clic en **Publish release**.
 
 ### Firma de código
 

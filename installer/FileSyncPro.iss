@@ -1,7 +1,7 @@
 ﻿; Instalador de FileSync Pro para Windows (Inno Setup 6).
 ; No se compila a mano: lo hace build.ps1 al final, pasándole la versión y, con -Sign, la firma:
 ;   ISCC.exe /DAppVersion=3.1.0 [/DSIGN /Sfsps=...] installer\FileSyncPro.iss
-; Resultado: dist\FileSync-Pro-Setup-<versión>.exe
+; Resultado: dist\FileSync-Pro-Setup.exe (nombre fijo, para que el enlace de descarga de GitHub no cambie)
 ;
 ; Se instala por usuario (sin pedir permisos de administrador) en
 ; %LOCALAPPDATA%\Programs\FileSync Pro. Si el usuario lo prefiere, el asistente le deja instalar
@@ -41,7 +41,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 SourceDir=..
 OutputDir=dist
-OutputBaseFilename=FileSync-Pro-Setup-{#AppVersion}
+OutputBaseFilename=FileSync-Pro-Setup
 SetupIconFile=assets\icono.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}
