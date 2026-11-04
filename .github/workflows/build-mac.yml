@@ -1,0 +1,144 @@
+      name: Build macOS
+
+      # Compila FileSync Pro para Mac en los servidores de GitHub (no hace falta tener un Mac).
+      # Se ejecuta a mano (Actions > Build macOS > Run workflow) o al subir una etiqueta v*.
+      # Genera dos versiones porque PyInstaller no compila para otra arquitectura:
+      #   - arm64  -> Macs con Apple Silicon (M1 o posterior)
+      #   - x86_64 -> Macs con Intel
+      # Cada versión lleva dentro su propio Tesseract OCR (el de Homebrew de ese runner, con sus bibliotecas
+      # reubicadas por tools/bundle_tesseract_mac.py), y al final se comprueba que funciona sin Homebrew.
+      on:
+        workflow_dispatch:
+        push:
+          tags: ["v*"]
+
+      jobs:
+        build:
+          strategy:
+            fail-fast: false
+            matrix:
+              include:
+                - runner: macos-latest
+                  arch: arm64
+                - runner: macos-15-intel
+                  arch: x86_64
+          runs-on: ${{ matrix.runner }}
+          timeout-minutes: 30
+          steps:
+            - uses: actions/checkout@v4
+
+            # desktop_runtime_config.json no se versiona (lleva la URL y el secreto de licencias).
+            # Se arma aquí con el secret FILESYNC_PRO_RUNTIME_CONFIG (Settings > Secrets and variables > Actions),
+            # cuyo valor es el contenido completo del desktop_runtime_config.json que genera build.ps1.
+            - name: Generar desktop_runtime_config.json
+              env:
+                RUNTIME_CONFIG: ${{ secrets.FILESYNC_PRO_RUNTIME_CONFIG }}
+              run: |
+                python3 - <<'PY'
+                import json, os, sys
+                raw = os.environ.get("RUNTIME_CONFIG", "").strip().lstrip("\ufeff")
+                if not raw:
+                    sys.exit("::error::Falta el secret FILESYNC_PRO_RUNTIME_CONFIG (Settings > Secrets and variables > Actions).")
+                try:
+                    config = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    sys.exit(f"::error::FILESYNC_PRO_RUNTIME_CONFIG no es un JSON valido: {exc}")
+                faltan = [k for k in ("FILESYNC_PRO_LICENSE_REDEEM_URL", "FILESYNC_PRO_LICENSE_SIGNING_SECRET", "WOMPI_SUBSCRIPTION_LINK_MAP") if not config.get(k)]
+                if faltan:
+                    sys.exit("::error::Faltan claves en FILESYNC_PRO_RUNTIME_CONFIG: " + ", ".join(faltan))
+                with open("desktop_runtime_config.json", "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, indent=4)
+                print("desktop_runtime_config.json generado con", len(config), "claves; el secreto mide", len(config["FILESYNC_PRO_LICENSE_SIGNING_SECRET"]), "caracteres")
+                PY
+
+            - uses: actions/setup-python@v5
+              with:
+                python-version: "3.13"
+
+            - name: Comprobar Python, Tk y arquitectura
+              run: |
+                python -c "import platform, tkinter; print(platform.machine(), 'Tk', tkinter.TkVersion); assert tkinter.TkVersion >= 8.6"
+
+            - name: Instalar dependencias y correr las pruebas
+              run: |
+                python -m pip install --upgrade pip
+                python -m pip install -r requirements-desktop.txt pytest
+                python -m pytest --ignore=tests/test_backend.py
+
+            - name: Comprobar el UUID de hardware (licencias en Mac)
+              run: |
+                python -c "from filesync_core.platform_compat import mac_hardware_uuid; u = mac_hardware_uuid(); print(u); assert u"
+
+            - name: Abrir la ventana real 3 segundos (prueba de humo)
+              env:
+                FILESYNC_PRO_DEV_MODE: "1"
+              run: |
+                python -c "import Organizador as O; app = O.ModernOrganizadorGUI(); app.after(3000, app.destroy); app.mainloop(); print('La ventana abrio y cerro sin errores')"
+
+            - name: Instalar Tesseract (se copia dentro de la app)
+              run: |
+                brew install tesseract
+                tesseract --version
+                lipo -archs "$(brew --prefix)/bin/tesseract"
+
+            # Firma con Developer ID (opcional). Solo si existen estos secrets del repositorio:
+            #   MACOS_CERT_P12_BASE64  certificado "Developer ID Application" exportado como .p12, en base64
+            #   MACOS_CERT_PASSWORD    contraseña con la que exportaste el .p12
+            #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD  para notarizar (ver README, "Firma de codigo")
+            # Sin ellos, la app sale con firma ad hoc, como hasta ahora.
+            - name: Importar el certificado de firma (si existe)
+              env:
+                MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+                MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+              run: |
+                if [ -z "$MACOS_CERT_P12_BASE64" ]; then
+                  echo "Sin certificado de firma: la app saldra con firma ad hoc (sin notarizar)."
+                  exit 0
+                fi
+                KEYCHAIN="$RUNNER_TEMP/firma.keychain-db"
+                KEYCHAIN_PASSWORD="$(uuidgen)"
+                echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/firma.p12"
+                security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+                security set-keychain-settings -lut 21600 "$KEYCHAIN"
+                security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+                security import "$RUNNER_TEMP/firma.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+                rm -f "$RUNNER_TEMP/firma.p12"
+                security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+                security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+                IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
+                if [ -z "$IDENTITY" ]; then
+                  echo "::error::El .p12 no tiene un certificado 'Developer ID Application' valido."
+                  exit 1
+                fi
+                echo "Firmando con: $IDENTITY"
+                echo "FILESYNC_CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+            - name: Construir FileSync Pro.app, .zip y .dmg
+              run: bash build_mac.sh
+              env:
+                PYTHON_BIN: python
+                APPLE_ID: ${{ secrets.APPLE_ID }}
+                APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+                APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+
+            - name: Verificar el Tesseract empaquetado (sin Homebrew)
+              run: |
+                python tools/bundle_tesseract_mac.py --verify "dist/FileSync Pro.app"
+                # Se copia la app a otra carpeta y se quita Tesseract de Homebrew: solo puede funcionar el empaquetado.
+                mkdir -p "$RUNNER_TEMP/otra ubicacion"
+                ditto "dist/FileSync Pro.app" "$RUNNER_TEMP/otra ubicacion/FileSync Pro.app"
+                brew uninstall --ignore-dependencies tesseract leptonica libarchive || true
+                if command -v tesseract; then echo "Tesseract sigue instalado"; exit 1; fi
+                "$RUNNER_TEMP/otra ubicacion/FileSync Pro.app/Contents/MacOS/FileSync Pro" --ocr-selftest "$RUNNER_TEMP/ocr.txt" || true
+                cat "$RUNNER_TEMP/ocr.txt"
+                grep -q "resultado=OK" "$RUNNER_TEMP/ocr.txt"
+                grep -q "Contents/Frameworks/tesseract/tesseract" "$RUNNER_TEMP/ocr.txt"
+                codesign --verify --deep --strict "$RUNNER_TEMP/otra ubicacion/FileSync Pro.app"
+
+            - uses: actions/upload-artifact@v4
+              with:
+                name: FileSync-Pro-macOS-${{ matrix.arch }}
+                path: |
+                  dist/FileSync-Pro-macOS.zip
+                  dist/FileSync-Pro-macOS.dmg
+                if-no-files-found: error
