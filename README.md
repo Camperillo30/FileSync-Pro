@@ -20,7 +20,7 @@
 | Mac con Apple Silicon (M1 o posterior) | [FileSync-Pro-macOS-AppleSilicon.dmg](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-AppleSilicon.dmg) |
 | Mac con Intel | [FileSync-Pro-macOS-Intel.dmg](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-Intel.dmg) |
 
-Todas las versiones y sus novedades están en [Releases](https://github.com/Camperillo30/FileSync-Pro/releases). La app incluye una demo gratis de 24 horas.
+Todas las versiones y sus novedades están en [Releases](https://github.com/Camperillo30/FileSync-Pro/releases). Mientras solo haya versiones de prueba (*pre-release*), como la 3.1.0, estos enlaces no funcionan: descarga desde [la versión 3.1.0](https://github.com/Camperillo30/FileSync-Pro/releases/tag/v3.1.0). La app incluye una demo gratis de 24 horas.
 
 ## Funciones
 
