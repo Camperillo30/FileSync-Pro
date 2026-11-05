@@ -94,8 +94,11 @@ Para comprobar el OCR de un ejecutable ya compilado: `--ocr-selftest` (debe term
 
 Los enlaces de *Descargar* apuntan siempre a la última versión publicada en Releases (las *pre-release* no cuentan como "última"), con nombres de archivo fijos.
 
-1. Sube `APP_VERSION` en `Organizador.py` (por ejemplo a `3.2.0`) y súbelo a GitHub.
-2. En GitHub: *Actions > Publicar versión > Run workflow*. Deja marcado **prerelease** para una versión de prueba, o desmárcalo para la definitiva.
+1. Sube `APP_VERSION` en `Organizador.py` (por ejemplo a `3.2.0`) y haz *Commit and Push* en PyCharm.
+2. Crea la etiqueta en PyCharm (*Git > New Tag*): `v3.2.0` para una versión definitiva, o `v3.2.0-beta` (con guion) para una pre-release.
+3. Súbela: *Git > Push*, con la casilla **Push tags** marcada.
+
+GitHub publica la versión solo. Si la etiqueta no coincide con `APP_VERSION`, se detiene sin compilar. También se puede lanzar a mano desde *Actions > Publicar versión > Run workflow*.
 
 El flujo `.github/workflows/release.yml` compila en los servidores de GitHub, sin necesitar tu PC:
 

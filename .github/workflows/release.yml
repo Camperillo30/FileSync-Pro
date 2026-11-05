@@ -6,10 +6,17 @@ name: Publicar versión
 #   FileSync-Pro-macOS-AppleSilicon.dmg    (Mac M1 o posterior)
 #   FileSync-Pro-macOS-Intel.dmg           (Mac Intel)
 # La versión sale de APP_VERSION en Organizador.py (etiqueta v<versión>).
-# Se ejecuta a mano: Actions > Publicar versión > Run workflow.
+# Se ejecuta de dos formas:
+#   - Al subir una etiqueta desde PyCharm (Git > New Tag y Push con "Push tags"):
+#       v3.2.0        -> versión definitiva (la que bajan los enlaces /releases/latest/...)
+#       v3.2.0-beta   -> pre-release (cualquier etiqueta con guion es de prueba)
+#     La etiqueta tiene que coincidir con APP_VERSION; si no, se detiene antes de compilar.
+#   - A mano: Actions > Publicar versión > Run workflow (usa APP_VERSION y la casilla prerelease).
 # Necesita el secret FILESYNC_PRO_RUNTIME_CONFIG (el JSON que genera build.ps1).
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       prerelease:
@@ -21,7 +28,42 @@ permissions:
   contents: read
 
 jobs:
+  # Decide la etiqueta y si es pre-release, y comprueba que coincida con APP_VERSION.
+  preparar:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          APP_VERSION="$(sed -n 's/^APP_VERSION *= *"\([^"]*\)".*/\1/p' Organizador.py | head -1)"
+          if [ -z "$APP_VERSION" ]; then echo "::error::No se encontró APP_VERSION en Organizador.py"; exit 1; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+            BASE="${TAG#v}"; BASE="${BASE%%-*}"
+            if [ "$BASE" != "$APP_VERSION" ]; then
+              echo "::error::La etiqueta $TAG no coincide con APP_VERSION = $APP_VERSION en Organizador.py. Corrige una de las dos, borra la etiqueta y vuelve a crearla."
+              exit 1
+            fi
+            case "$TAG" in *-*) PRERELEASE=true ;; *) PRERELEASE=false ;; esac
+          else
+            TAG="v$APP_VERSION"
+            PRERELEASE="${INPUT_PRERELEASE:-true}"
+          fi
+          echo "Etiqueta: $TAG | pre-release: $PRERELEASE"
+          {
+            echo "tag=$TAG"
+            echo "version=${TAG#v}"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+
   windows:
+    needs: preparar
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -86,11 +128,12 @@ jobs:
           if-no-files-found: error
 
   mac:
+    needs: preparar
     uses: ./.github/workflows/build-mac.yml
     secrets: inherit
 
   publicar:
-    needs: [windows, mac]
+    needs: [preparar, windows, mac]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -104,11 +147,10 @@ jobs:
       - name: Publicar en Releases
         env:
           GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ inputs.prerelease }}
+          TAG: ${{ needs.preparar.outputs.tag }}
+          VERSION: ${{ needs.preparar.outputs.version }}
+          PRERELEASE: ${{ needs.preparar.outputs.prerelease }}
         run: |
-          VERSION="$(sed -n 's/^APP_VERSION *= *"\([^"]*\)".*/\1/p' Organizador.py | head -1)"
-          if [ -z "$VERSION" ]; then echo "::error::No se encontró APP_VERSION en Organizador.py"; exit 1; fi
-          TAG="v$VERSION"
           # Nombres fijos: así los enlaces de descarga no cambian entre versiones.
           mkdir -p subir
           cp artefactos/FileSync-Pro-Windows/FileSync-Pro-Setup.exe subir/FileSync-Pro-Setup.exe
@@ -118,6 +160,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "La versión $TAG ya existe: se reemplazan sus archivos."
             gh release edit "$TAG" --prerelease="$PRERELEASE"
+            if [ "$PRERELEASE" = "false" ]; then gh release edit "$TAG" --latest; fi
           else
             sed "s/{VERSION}/$VERSION/g" packaging/notas_version.md > notas.md
             FLAGS=()
