@@ -7,7 +7,7 @@
 <p align="center">
   Aplicación de escritorio para <b>Windows y macOS</b> (Python + Tkinter) que organiza archivos automáticamente y lee facturas con OCR.<br>
   Pensada para pymes, contadores y freelancers en Colombia. Se vende por suscripción con licencias por plan.<br>
-  <a href="https://filesyncpro-n8clbgo.gamma.site/">Sitio web</a>
+  <a href="https://claude.ai/artifact/7Pc89QFJihBon8PRmTnSno">Sitio web</a>
 </p>
 
 ![FileSync Pro en modo claro](docs/captura-claro.png)

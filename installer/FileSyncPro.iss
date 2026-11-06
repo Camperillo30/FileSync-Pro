@@ -15,7 +15,7 @@
 #define AppName "FileSync Pro"
 #define AppPublisher "S.C.A"
 #define AppExeName "FileSync Pro.exe"
-#define AppURL "https://filesyncpro-n8clbgo.gamma.site/"
+#define AppURL "https://claude.ai/artifact/7Pc89QFJihBon8PRmTnSno"
 
 [Setup]
 ; AppId identifica la app ante Windows: NO cambiarlo nunca, o las actualizaciones se instalarían
