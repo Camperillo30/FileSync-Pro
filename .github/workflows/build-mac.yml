@@ -63,7 +63,7 @@
               run: |
                 python -m pip install --upgrade pip
                 python -m pip install -r requirements-desktop.txt pytest
-                python -m pytest --ignore=tests/test_backend.py
+                python -m pytest
 
             - name: Comprobar el UUID de hardware (licencias en Mac)
               run: |

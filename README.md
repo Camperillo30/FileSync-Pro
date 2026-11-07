@@ -6,7 +6,7 @@
 
 <p align="center">
   Aplicación de escritorio para <b>Windows y macOS</b> (Python + Tkinter) que organiza archivos automáticamente y lee facturas con OCR.<br>
-  Pensada para pymes, contadores y freelancers en Colombia. Se vende por suscripción con licencias por plan.<br>
+  Pensada para pymes, contadores y freelancers en Colombia. Se vende por suscripción mensual, con tres licencias: Básica, Pro y Premium.<br>
   <a href="https://claude.ai/artifact/7Pc89QFJihBon8PRmTnSno">Sitio web</a>
 </p>
 
@@ -48,9 +48,10 @@ Todas las versiones y sus novedades están en [Releases](https://github.com/Camp
 - `tools/bundle_tesseract_mac.py`: mete Tesseract dentro del `.app`, con rutas reubicadas y firma.
 - `tools/probar_licencias_make.py`: prueba de punta a punta del flujo de licencias (pago simulado, correo, canje y renovación).
 - `.github/workflows/build-mac.yml`: compila la versión de Mac en GitHub Actions, para Apple Silicon e Intel.
+- `.github/workflows/release.yml`: compila Windows y Mac y publica la versión en Releases al subir una etiqueta `v*`.
+- `packaging/notas_version.md`: notas que acompañan cada versión publicada.
 - `tests/`: pruebas automáticas (`pytest`).
 - `assets/`: íconos y logo.
-- `backend_app.py`, `render.yaml`, `DEPLOY_FREE.md`: API de licencias en FastAPI de una versión anterior. Ya no se usa: hoy las licencias van por Make.
 
 ## Desarrollo
 
@@ -64,7 +65,7 @@ Pruebas y estilo:
 
 ```powershell
 pip install pytest ruff
-python -m pytest --ignore=tests/test_backend.py
+python -m pytest
 ruff check .
 ```
 
@@ -82,7 +83,7 @@ Para probar el `.exe` como desarrollador existe `.\build.ps1 -Dev`. Genera `dist
 .\build.ps1
 ```
 
-`build.ps1` genera `desktop_runtime_config.json` a partir del `.env`, con la URL del servicio de activación, el secreto con que se firman sus respuestas, los links de pago y el plan por defecto. Lo embebe en `dist\FileSync Pro.exe`. Además prepara Tesseract en `vendor\tesseract` y lo adelgaza. Con `-SkipOcr` compila sin OCR y con `-NoSlim` deja Tesseract completo.
+`build.ps1` genera `desktop_runtime_config.json` a partir del `.env`, con la URL del servicio de activación, el secreto con que se firman sus respuestas, los links de pago y la licencia por defecto. Lo embebe en `dist\FileSync Pro.exe`. Además prepara Tesseract en `vendor\tesseract` y lo adelgaza. Con `-SkipOcr` compila sin OCR y con `-NoSlim` deja Tesseract completo.
 
 Si está instalado [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 o superior (`winget install JRSoftware.InnoSetup`), también genera el instalador `dist\FileSync-Pro-Setup.exe` (nombre fijo, para que el enlace de descarga no cambie) a partir de `installer/FileSyncPro.iss`. El instalador no pide permisos de administrador, crea los accesos directos y aparece en «Agregar o quitar programas». Al desinstalar no se borran la licencia ni los datos del usuario. Con `-SkipInstaller` se omite. Al terminar muestra el SHA-256 del `.exe` y del instalador.
 
@@ -128,15 +129,17 @@ SmartScreen puede seguir avisando las primeras semanas: la reputación de un cer
 
 No distribuyas ni subas a git: `.env`, `desktop_runtime_config.json` ni `desktop_runtime_config.local.json`. Al distribuir, incluye `THIRD_PARTY_NOTICES.md`, con las licencias de Tesseract y otras.
 
-## Licencias y planes
+## Licencias
 
-Flujo de compra: la app abre el link de pago de **Wompi** del plan elegido. Wompi avisa a un escenario de **Make**, que verifica la firma del evento, genera un **código de activación aleatorio**, guarda solo su hash y lo envía por correo. El cliente pega el código en «Verificar licencia». La app lo canjea en otro webhook de Make, que liga el código al primer equipo que lo usa y devuelve el plan **firmado**, y la app verifica esa firma. **Un código sirve para un solo equipo.** Cada pago nuevo del mismo correo extiende la licencia 30 días, sin código nuevo.
+Flujo de compra: la app abre el link de pago de **Wompi** de la licencia elegida. Wompi avisa a un escenario de **Make**, que verifica la firma del evento, genera un **código de activación aleatorio**, guarda solo su hash y lo envía por correo. El cliente pega el código en «Verificar licencia». La app lo canjea en otro webhook de Make, que liga el código al primer equipo que lo usa y devuelve la licencia **firmada**, y la app verifica esa firma. **Un código sirve para un solo equipo.** Cada pago nuevo del mismo correo extiende la licencia 30 días, sin código nuevo.
 
-| Plan | Precio mensual (COP) | Funciones | Usos al mes |
+| Licencia | Precio mensual (COP) | Funciones | Usos al mes |
 | --- | --- | --- | --- |
-| Básica | $18.900 | Organización por categoría y fecha, mover archivos | 3 |
-| Pro | $33.900 | + filtro por tipo, duplicados y deshacer | 10 |
-| Premium | $59.900 | Todas las funciones | Ilimitados |
+| Básica | $18.900 | Organización por categoría y por fecha, detección de recibos, extractor de facturas y modo oscuro | 3 |
+| Pro | $33.900 | Todo lo de Básica + duplicados con cuarentena, filtro por tipo de archivo y deshacer | 10 |
+| Premium | $59.900 | Todo lo de Pro + soporte prioritario directo | Ilimitados |
+
+Un uso es una organización completa o un lote de facturas procesado. Analizar un directorio y deshacer no gastan usos.
 
 **Demo única:** quien no tiene licencia puede probar todas las funciones una vez por equipo, durante 24 horas, hasta 50 archivos y 3 facturas. Lo que se acabe primero. Make registra cada equipo, así que borrar los datos locales no da otra demo. La app guarda una copia del estado en el registro de Windows y detecta si se atrasa el reloj.
 

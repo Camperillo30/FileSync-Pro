@@ -26,7 +26,8 @@ hace cada parte (buscar la clase/función por nombre para ir directo):
   liga a un solo equipo y responde con una firma que la app verifica.
 - `LegacySheetsLicenseClient` y `LicenseApiClient`: formas anteriores de
   consultar si una licencia es válida (CSV público de Google Sheets y
-  backend propio `backend_app.py`). Quedan en el archivo pero ya no se usan.
+  API REST propia, ya retirada del repositorio). Quedan en el archivo pero
+  ya no se usan.
 - `ModernOrganizadorGUI`: la ventana principal (hereda de `tk.Tk`). Aquí
   vive toda la interfaz: botones, pestañas, el tutorial guiado, el flujo de
   compra/activación de licencia, y el hilo en segundo plano que organiza los
@@ -2625,7 +2626,8 @@ class LegacySheetsLicenseClient:
 
 
 class LicenseApiClient:
-    """Cliente HTTP para el backend propio de licencias (`backend_app.py`).
+    """Cliente HTTP para la API REST propia de licencias de una versión anterior
+    (ya no se usa y su servidor se retiró del repositorio).
 
     Es la alternativa "moderna" a `LegacySheetsLicenseClient`: en vez de
     leer un CSV de Google Sheets, habla directamente con la API REST vía
@@ -2683,7 +2685,7 @@ class LicenseApiClient:
 
     def activate_license(self, email, activation_code, device_id):
         """Activa una licencia en este dispositivo usando el código de
-        activación (ver `backend_app.activate_license`)."""
+        activación."""
         return self._request("POST", "/v1/licenses/activate", {
             "email": email, "activation_code": activation_code, "device_id": device_id,
         })
@@ -3125,7 +3127,7 @@ class ModernOrganizadorGUI(tk.Tk):
         self.after(1400, self._ofrecer_reanudar_proceso)
         self.after(3000, self._purgar_cuarentena_automatica)
         self.bind("<FocusIn>", lambda _: self._sincronizar_licencia_silenciosa())
-        # Despierta el backend de Render en segundo plano para evitar "servicio lento"
+        # Hace el "warm_up" del cliente de licencias en segundo plano (con Make no hace nada).
         threading.Thread(target=self.api_client.warm_up, daemon=True).start()
 
     def _configurar_tamano_inicial(self):
