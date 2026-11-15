@@ -91,6 +91,7 @@ def run_command(args: Sequence[str], env: Mapping[str, str] | None = None) -> st
 
 
 def fetch_with_curl(url: str, dest: Path) -> None:
+    """Descarga `url` a `dest` con curl (por ejemplo los idiomas de `tessdata_fast` que falten)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     run_command(["curl", "-fsSL", "--retry", "3", "--connect-timeout", "20", "-o", str(dest), url])
 
@@ -138,6 +139,7 @@ def is_system_dep(path: str) -> bool:
 # --- Cálculo de dependencias ---------------------------------------------------------------
 @dataclass
 class DependencyPlan:
+    """Qué bibliotecas copiar junto a Tesseract y qué rutas reescribir en cada binario."""
     # nombre con el que se guarda en lib/  ->  archivo real de origen
     libs: dict[str, Path] = field(default_factory=dict)
     # archivo (EXE_KEY o nombre en lib/)  ->  {ruta original de la dependencia: nombre en lib/}
@@ -147,10 +149,12 @@ class DependencyPlan:
 
 
 def _unique(items: Sequence[str]) -> list[str]:
+    """Quita repetidos conservando el orden original."""
     return list(dict.fromkeys(items))
 
 
 def _expand_placeholders(text: str, referrer: Path, main_exe: Path) -> Path:
+    """Reemplaza `@loader_path` y `@executable_path` por rutas reales para poder ubicar el archivo."""
     if text.startswith("@loader_path"):
         text = str(referrer.parent) + text[len("@loader_path") :]
     elif text.startswith("@executable_path"):
@@ -239,6 +243,7 @@ def codesign_args(target: Path, identity: str | None, entitlements: str | None =
 
 # --- Búsqueda de Tesseract y de los idiomas -------------------------------------------------
 def find_tesseract(explicit: str | None = None, env: Mapping[str, str] | None = None) -> Path:
+    """Ubica el ejecutable de Tesseract: argumento, `TESSERACT_BIN`, PATH o Homebrew/MacPorts."""
     env = os.environ if env is None else env
     wanted = [explicit, env.get("TESSERACT_BIN"), shutil.which("tesseract"), *TESSERACT_CANDIDATES]
     for candidate in wanted:
@@ -292,6 +297,7 @@ def assemble_tessdata(dest: Path, sources: Sequence[Path], fetch: Fetcher, log: 
 
 # --- Aplicación (.app) ------------------------------------------------------------------------
 def app_main_executable(app: Path) -> Path:
+    """Ruta del ejecutable principal del .app, según `CFBundleExecutable` del Info.plist."""
     name = "FileSync Pro"
     try:
         with open(app / "Contents" / "Info.plist", "rb") as handle:
@@ -302,6 +308,7 @@ def app_main_executable(app: Path) -> Path:
 
 
 def binary_archs(path: Path, runner: Runner) -> list[str]:
+    """Arquitecturas que trae un binario (`lipo -archs`), por ejemplo `['arm64']`."""
     return runner(["lipo", "-archs", str(path)]).split()
 
 
@@ -323,6 +330,7 @@ def check_architecture(tesseract_archs: Sequence[str], app_archs: Sequence[str])
 
 
 def _copy_binary(source: Path, dest: Path, arch: str, runner: Runner) -> None:
+    """Copia un binario dejando solo la arquitectura de la app (si era universal, con `lipo -thin`)."""
     archs = binary_archs(source, runner)
     if arch not in archs:
         raise BundleError(f"{source.name} es {'/'.join(archs)} y la app es {arch}.")
@@ -460,6 +468,7 @@ def verify_bundle(app: Path, runner: Runner = run_command, *, ocr_test: bool = T
 
 # --- Línea de comandos ------------------------------------------------------------------------------
 def _parser() -> argparse.ArgumentParser:
+    """Opciones de la línea de comandos (`--check`, `--app`, `--verify`...)."""
     parser = argparse.ArgumentParser(description="Empaqueta Tesseract OCR dentro de FileSync Pro.app (macOS).")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="solo comprobar que Tesseract se puede empaquetar")
@@ -475,6 +484,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Punto de entrada (lo llama `build_mac.sh`). Devuelve 0 si todo salió bien; solo funciona en macOS."""
     args = _parser().parse_args(argv)
     if sys.platform != "darwin":
         print("ERROR: este script solo funciona en macOS.", file=sys.stderr)

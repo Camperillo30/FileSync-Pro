@@ -38,6 +38,7 @@ PLAN_LINK_IDS = {"basica": "i8Erwh", "pro": "SYVQ0M", "premium": "HQB1kI"}
 
 
 def post_json(url, payload, timeout=40):
+    """Hace un POST con JSON y devuelve `(código HTTP, cuerpo de la respuesta)`."""
     req = request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",
         headers={"Content-Type": "application/json", "User-Agent": "FileSync-Pro-test/1"},
@@ -72,11 +73,13 @@ def send_payment(email, plan, events_secret):
 
 
 def code_hash(email, code):
+    """Misma fórmula que Make y la app: sha256(código sin guiones en mayúsculas|correo)."""
     clean = "".join(ch for ch in code if ch.isalnum()).upper()
     return hashlib.sha256(f"{clean}|{email.strip().lower()}".encode()).hexdigest()
 
 
 def redeem(email, code, machine, signing_secret):
+    """Canjea el código en el webhook de Make como lo haría el equipo `machine` y verifica la firma."""
     chash = code_hash(email, code)
     nonce = uuid.uuid4().hex
     _, body = post_json(REDEEM_HOOK, {"v": 1, "code_hash": chash, "machine": machine, "nonce": nonce})
@@ -90,6 +93,7 @@ def redeem(email, code, machine, signing_secret):
 
 
 def main():
+    """Corre los pasos 1-5 descritos arriba, pidiendo el código por teclado."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--email", required=True, help="Correo tuyo donde Make enviará el código")
     parser.add_argument("--plan", choices=sorted(PLAN_LINK_IDS), default="basica")

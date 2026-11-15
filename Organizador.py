@@ -5,8 +5,14 @@ usuario final. Es un archivo grande, así que aquí va un mapa rápido de qué
 hace cada parte (buscar la clase/función por nombre para ir directo):
 
 - Funciones al inicio del archivo (load_dotenv_file, load_runtime_config...):
-  cargan configuración desde `.env` y `desktop_runtime_config.json` antes de
-  que arranque cualquier otra cosa (URLs del backend, links de pago, etc.).
+  cargan la configuración antes de que arranque cualquier otra cosa (URL del
+  webhook de canje de Make, secreto de firma, links de pago de Wompi...).
+  Desde el código fuente se leen `.env`, `desktop_runtime_config.json` y
+  `desktop_runtime_config.local.json`; dentro del ejecutable (.exe/.app) SOLO
+  la configuración embebida al compilar (ver `load_embedded_config_only`).
+- Constantes (`PLAN_FEATURES`, `PLAN_PRICING_COP`, `DEMO_*`, `TEMA_CLARO`,
+  `TEMA_OSCURO`, `CUARENTENA_DIAS_MAX`...): qué incluye cada plan, precios
+  que se muestran, límites de la demo y colores de la interfaz.
 - `ModernOrganizadorArchivos`: la lógica "pura" de organizar archivos
   (decidir la categoría de cada archivo, calcular su hash para detectar
   duplicados, elegir la carpeta de destino por fecha, etc.). No dibuja nada
@@ -14,9 +20,10 @@ hace cada parte (buscar la clase/función por nombre para ir directo):
 - `InvoiceExtractor`: lee facturas (imágenes o PDF) y trata de extraer datos
   como proveedor, número de factura, fecha, NIT/RUT, correo y total, usando
   OCR (pytesseract) y/o texto de PDF (pypdf).
-- `LicenseManager`: guarda en disco (cifrado) el estado de la licencia del
-  usuario en este equipo: si está activada, el plan contratado, cuántos usos
-  lleva este mes, si está en periodo de prueba, etc.
+- `LicenseManager`: guarda en disco (cifrado en Windows) el estado de la
+  licencia del usuario en este equipo: si está activada, el plan contratado,
+  cuándo vence, cuántos usos lleva este mes y el estado de la demo única
+  (24 horas, 50 archivos y 3 facturas, una sola vez por equipo).
 - `ProcessRecoveryManager`: permite que, si la app se cierra a mitad de una
   organización de archivos, la próxima vez se pueda continuar donde quedó
   (guarda un "manifiesto" y un "diario" de lo ya procesado).
@@ -24,20 +31,26 @@ hace cada parte (buscar la clase/función por nombre para ir directo):
   cliente escribe su correo y el código de activación que le llegó tras
   pagar en Wompi; el código se canjea contra un webhook de Make, que lo
   liga a un solo equipo y responde con una firma que la app verifica.
+  El mismo webhook registra la demo única de cada equipo (`request_demo`).
 - `LegacySheetsLicenseClient` y `LicenseApiClient`: formas anteriores de
   consultar si una licencia es válida (CSV público de Google Sheets y
   API REST propia, ya retirada del repositorio). Quedan en el archivo pero
-  ya no se usan.
+  la app ya no los crea en ningún lado.
 - `ModernOrganizadorGUI`: la ventana principal (hereda de `tk.Tk`). Aquí
-  vive toda la interfaz: botones, pestañas, el tutorial guiado, el flujo de
-  compra/activación de licencia, y el hilo en segundo plano que organiza los
+  vive toda la interfaz: botones, paneles, modo oscuro, el tutorial guiado,
+  el flujo de compra/activación de licencia, la demo, la cuarentena de
+  duplicados, "Deshacer", y el hilo en segundo plano que organiza los
   archivos mientras la interfaz sigue respondiendo.
+- `ocr_selftest()`: diagnóstico del OCR sin abrir la ventana
+  (`--ocr-selftest`).
 - `main()`: punto de entrada; crea la ventana principal y arranca el bucle
   de eventos de Tkinter.
 
 La app corre en Windows y en macOS. Todo lo que depende del sistema
 operativo (tipografías, carpeta de datos, recorrido de carpetas en Mac,
-identificador del equipo, Tesseract) vive en `filesync_core/platform_compat.py`.
+identificador del equipo, Tesseract) vive en `filesync_core/platform_compat.py`,
+y las operaciones de archivos con validación de rutas (escritura atómica,
+cuarentena, borrado seguro) en `filesync_core/safety.py`.
 """
 
 import ctypes
@@ -175,8 +188,11 @@ def load_runtime_config():
     posibles (carpeta temporal de PyInstaller, carpeta actual, junto al
     script, junto al .exe), en ese orden, sin duplicar rutas ya vistas.
     Al final también busca `desktop_runtime_config.local.json`, que sí
-    puede sobrescribir valores (para pruebas en el equipo del desarrollador,
-    ver `is_owner_device` más abajo)."""
+    puede sobrescribir valores (por ejemplo `FILESYNC_PRO_DEV_HOSTNAMES` para
+    el modo desarrollador en el PC de quien programa; no se sube a git).
+
+    Solo se usa al ejecutar desde el código fuente: dentro del ejecutable se
+    llama a `load_embedded_config_only` en su lugar."""
     candidates = []
     if getattr(sys, "_MEIPASS", None):
         candidates.append(Path(sys._MEIPASS) / DESKTOP_RUNTIME_CONFIG_NAME)
@@ -494,8 +510,9 @@ TEMA_OSCURO = {
     "tutorial_fg": "#5cb1e8",
     "scrollbar_trough": "#1a232c",
 }
-DEFAULT_API_BASE_URL = os.getenv("FILESYNC_PRO_API_URL", "").strip()  # Sin uso: flujo antiguo de pagos.
-SHEETS_LICENSE_URL = os.getenv("FILESYNC_PRO_LICENSE_CSV_URL", "").strip()  # Flujo antiguo (ya no se usa por defecto).
+# Restos de los flujos de licencia anteriores: ningún código las lee hoy.
+DEFAULT_API_BASE_URL = os.getenv("FILESYNC_PRO_API_URL", "").strip()  # API REST propia (retirada).
+SHEETS_LICENSE_URL = os.getenv("FILESYNC_PRO_LICENSE_CSV_URL", "").strip()  # Google Sheet en CSV (retirado).
 # Licencias por código de activación (Make): URL del webhook de canje y secreto con el que Make firma
 # cada respuesta. Ambos viajan en desktop_runtime_config.json (lo genera build.ps1 desde el .env).
 LICENSE_REDEEM_URL = os.getenv("FILESYNC_PRO_LICENSE_REDEEM_URL", "").strip()
@@ -592,8 +609,8 @@ PLAN_FEATURES = {
         "undo_organization": True,
     },
 }
-# Acceso "sin restricciones" que se usa para el equipo del desarrollador
-# (ver `is_owner_device`) y para el modo desarrollador local.
+# Acceso "sin restricciones": lo que se desbloquea en modo desarrollador
+# (ver `LicenseManager.is_developer_access_enabled`).
 FULL_FEATURE_ACCESS = {
     "remove_duplicates": True,
     "move_files": True,
@@ -1711,6 +1728,7 @@ class LicenseManager:
 
     @staticmethod
     def _demo_vacia():
+        """Estado de una demo que nunca se ha usado (punto de partida de `_combinar_demo`)."""
         return {"status": "none", "files_used": 0, "invoices_used": 0, "started_at": "", "last_seen_at": ""}
 
     @classmethod
@@ -1746,6 +1764,7 @@ class LicenseManager:
         return resultado
 
     def _ruta_respaldo_demo_mac(self):
+        """En macOS la copia de respaldo de la demo va en este archivo oculto (no hay registro de Windows)."""
         return Path.home() / ".filesyncpro_ui"
 
     def _leer_respaldo_demo(self):
@@ -1921,9 +1940,10 @@ class LicenseManager:
     def get_device_id():
         """Identificador estable de este equipo, derivado del sistema
         operativo, el nombre de la máquina y la dirección MAC (`uuid.getnode`),
-        reducido a un hash. Se usa para el límite de "activaciones por
-        licencia" y para detectar si un archivo de licencia fue copiado de
-        otro equipo.
+        reducido a un hash. Se manda a Make al canjear el código (Make liga
+        cada código a un solo equipo) y sirve para detectar si un archivo de
+        licencia fue copiado de otro equipo. La demo y el ejecutable de
+        desarrollador usan otro identificador (`get_demo_device_id`).
 
         En macOS se usa el UUID de hardware del Mac: `platform.node()` (el
         nombre de red) y la MAC (`uuid.getnode`) cambian según el Wi-Fi o la
@@ -1947,7 +1967,7 @@ class LicenseManager:
         """Deshabilitado a propósito: la app distribuida nunca debe traer
         embebida una identidad de equipo con acceso privilegiado. Siempre
         devuelve `False` en el cliente que reciben los usuarios."""
-        # Never embed privileged device identities in a distributable client.
+        # Nunca se embebe en la app distribuida una identidad de equipo privilegiada.
         return False
 
     @staticmethod
@@ -1985,7 +2005,9 @@ class LicenseManager:
     def local_unrestricted_access_mode(self):
         """Devuelve "owner", "developer" o cadena vacía, según por qué
         razón (si aplica) este equipo tiene acceso sin restricciones sin
-        necesidad de una licencia real."""
+        necesidad de una licencia real. En la práctica solo puede salir
+        "developer": `is_owner_device` siempre devuelve `False` (las ramas
+        "owner" de la interfaz se conservan por compatibilidad)."""
         if self.is_owner_device():
             return "owner"
         if self.is_developer_access_enabled():
@@ -2200,6 +2222,7 @@ class ProcessRecoveryManager:
 
     @staticmethod
     def _utc_now():
+        """Fecha y hora actual en UTC, en texto ISO (para las marcas de tiempo del estado)."""
         return dt.datetime.utcnow().isoformat()
 
     def _load_json_file(self, path):
@@ -2213,6 +2236,7 @@ class ProcessRecoveryManager:
             return {}
 
     def _save_json_file(self, path, payload):
+        """Guarda `payload` como JSON de forma atómica (nunca deja el archivo a medio escribir)."""
         atomic_write_json(path, payload)
 
     def load_state(self):
@@ -2222,9 +2246,11 @@ class ProcessRecoveryManager:
         return state if isinstance(state, dict) else {}
 
     def _manifest_path_for(self, run_id):
+        """Ruta del manifiesto (lista de archivos planificados) de la corrida `run_id`."""
         return self.base_dir / f"{PROCESS_MANIFEST_PREFIX}{run_id}.json"
 
     def _journal_path_for(self, run_id):
+        """Ruta del diario (una línea por archivo procesado) de la corrida `run_id`."""
         return self.base_dir / f"{PROCESS_JOURNAL_PREFIX}{run_id}.jsonl"
 
     def clear_run_files(self, state=None):
@@ -2340,12 +2366,15 @@ class ProcessRecoveryManager:
         self.clear()
 
     def _last_run_manifest_path(self):
+        """Copia del manifiesto de la última corrida completada (la usa "Deshacer")."""
         return self.base_dir / "last_run_manifest.json"
 
     def _last_run_journal_path(self):
+        """Copia del diario de la última corrida completada (la usa "Deshacer")."""
         return self.base_dir / "last_run_journal.jsonl"
 
     def _last_run_summary_path(self):
+        """Resumen de la última corrida completada (origen, destino, si se deshizo...)."""
         return self.base_dir / "last_run_summary.json"
 
     def _preservar_ultima_ejecucion(self, state):
@@ -2472,17 +2501,14 @@ class ProcessRecoveryManager:
 
 
 class LegacySheetsLicenseClient:
-    """
-    Cliente de licencias sin backend propio.
-    Lee un Google Sheet publicado como CSV para verificar suscripciones sincronizadas por Make.
-    No requiere servidor, Render, ni base de datos propia.
+    """RETIRADO: la app ya no crea este cliente (hoy usa `MakeCodeLicenseClient`).
 
-    El Sheet debe tener estas columnas (fila 1 = encabezados):
-        email | plan | estado | fecha_pago
-
-    Para obtener la URL CSV de tu Sheet:
-        Archivo → Compartir → Publicar en la web → CSV → Copiar enlace
-    Luego ponla en FILESYNC_PRO_SHEETS_URL dentro de desktop_runtime_config.json.
+    Era el cliente de licencias sin backend propio: leía un Google Sheet
+    publicado como CSV, con columnas `email | plan | estado | fecha_pago`
+    escritas por Make tras cada pago, y activaba solo con el correo. Se
+    abandonó el 2 oct 2026 porque el CSV público exponía los datos de todos
+    los clientes y conocer el correo de alguien bastaba para activar su
+    licencia. Se conserva solo como referencia.
     """
 
     _CONNECTION_MSG = (
@@ -2626,15 +2652,11 @@ class LegacySheetsLicenseClient:
 
 
 class LicenseApiClient:
-    """Cliente HTTP para la API REST propia de licencias de una versión anterior
-    (ya no se usa y su servidor se retiró del repositorio).
+    """RETIRADO: la app ya no crea este cliente (hoy usa `MakeCodeLicenseClient`).
 
-    Es la alternativa "moderna" a `LegacySheetsLicenseClient`: en vez de
-    leer un CSV de Google Sheets, habla directamente con la API REST vía
-    `/v1/licenses/activate` y `/v1/licenses/validate`. Cuál de los dos
-    clientes usa la app depende de qué URL esté configurada (backend
-    propio vs. hoja de cálculo) — ver cómo se construye el cliente en
-    `ModernOrganizadorGUI`.
+    Era el cliente HTTP de la API REST propia de licencias (FastAPI, con
+    `/v1/licenses/activate`, `/v1/licenses/validate` y `/health`), cuyo
+    servidor ya se quitó del repositorio. Se conserva solo como referencia.
     """
 
     _CONNECTION_MSG = (
@@ -2700,7 +2722,7 @@ class LicenseApiClient:
         """Este cliente no puede "adivinar" una suscripción a partir del
         correo (a diferencia del cliente de Sheets): siempre exige pasar
         por el flujo explícito de activación con código."""
-        # Activation is deliberately never inferred from an email address.
+        # La activación nunca se deduce solo del correo.
         return {"status": "activation_required", "email": email, "plan_code": plan_code}
 
 
@@ -2854,6 +2876,7 @@ class MakeCodeLicenseClient:
         }
 
     def _message_for(self, error_code):
+        """Mensaje para el usuario según el error que devolvió Make ("invalid", "used", "other_app"...)."""
         return self._ERROR_MESSAGES.get(error_code, self._ERROR_MESSAGES["invalid"])
 
     # --- demo única ---
@@ -2957,6 +2980,7 @@ class MakeCodeLicenseClient:
     # --- decidir si hace falta consultar a Make ---
 
     def _state(self):
+        """Estado local de licencia (el dict de `LicenseManager`), o `{}` si no hay o falla."""
         try:
             state = self._state_provider() if self._state_provider else None
         except Exception:  # noqa: BLE001 - el estado local nunca debe romper la validación
@@ -3120,8 +3144,10 @@ class ModernOrganizadorGUI(tk.Tk):
         # `after(ms, fn)` programa `fn` para ejecutarse una sola vez pasados
         # esos milisegundos, sin bloquear la interfaz: así la ventana
         # aparece de inmediato y estas comprobaciones (avisos de licencia,
-        # sincronizar con el servidor, ofrecer reanudar un proceso viejo)
-        # se hacen un momento después, en segundo plano.
+        # revisar la licencia con Make, ofrecer reanudar un proceso viejo,
+        # borrar lo viejo de la cuarentena) se hacen un momento después.
+        # Ojo: corren en el hilo de la interfaz (salvo la purga, que lanza su
+        # propio hilo), solo que no retrasan la aparición de la ventana.
         self.after(700, self._mostrar_avisos_licencia)
         self.after(1200, self._sincronizar_licencia_silenciosa)
         self.after(1400, self._ofrecer_reanudar_proceso)
@@ -3491,6 +3517,7 @@ class ModernOrganizadorGUI(tk.Tk):
 
     @staticmethod
     def _normalizar_email(email):
+        """Correo sin espacios y en minúsculas, para comparar y guardar siempre igual."""
         return (email or "").strip().lower()
 
     def _validar_email(self, email):
@@ -4044,10 +4071,11 @@ class ModernOrganizadorGUI(tk.Tk):
 
     def _crear_header(self, parent):
         """Cabecera de la ventana: título de la app, subtítulo, y la barra
-        oscura con el estado de la licencia, el interruptor de modo oscuro
-        y los botones "Verificar licencia" / "Comprar licencia" / "Cómo
-        usar" (este último abre el tutorial y también se registra como
-        objetivo del propio tutorial)."""
+        oscura con el estado de la licencia (o la cuenta regresiva de la
+        demo), el interruptor de modo oscuro y los botones "Probar demo
+        gratis" (solo si aplica, ver `_actualizar_boton_demo`), "Verificar
+        licencia" / "Comprar licencia" / "Cómo usar" (este último abre el
+        tutorial y también se registra como objetivo del propio tutorial)."""
         paleta = self._paleta()
         wrapper = ttk.Frame(parent)
         wrapper.pack(fill=tk.X)
@@ -4115,8 +4143,10 @@ class ModernOrganizadorGUI(tk.Tk):
     def _crear_panel_izquierdo(self, parent):
         """Columna izquierda: selectores de carpeta origen/destino, las
         casillas de opciones (por categoría, por fecha, detectar recibos,
-        eliminar duplicados, mover en vez de copiar), el filtro por tipo
-        de archivo y las tarjetas de estadísticas. Todo va dentro de un
+        eliminar duplicados, mover en vez de copiar, eliminar carpetas
+        vacías del origen), el filtro por tipo de archivo, la tarjeta
+        "Cuarentena de duplicados" y las tarjetas de estadísticas. Todo va
+        dentro de un
         `Canvas` con scroll propio, porque en pantallas pequeñas el
         contenido puede no caber completo."""
         paleta = self._paleta()
@@ -4659,38 +4689,46 @@ class ModernOrganizadorGUI(tk.Tk):
     # concreto (_activar_/_desactivar_scroll_*), para que mover la rueda
     # sobre el panel izquierdo no desplace por accidente el derecho.
     def _actualizar_scroll_panel_izquierdo(self, _event=None):
+        """Recalcula el área desplazable del panel izquierdo cuando cambia su contenido."""
         if self._left_scroll_canvas is None:
             return
         self._left_scroll_canvas.configure(scrollregion=self._left_scroll_canvas.bbox("all"))
 
     def _ajustar_ancho_panel_izquierdo(self, event):
+        """Hace que el contenido del panel izquierdo ocupe todo el ancho del canvas al redimensionar."""
         if self._left_scroll_canvas is None or self._left_scroll_window is None:
             return
         self._left_scroll_canvas.itemconfigure(self._left_scroll_window, width=event.width)
 
     def _activar_scroll_panel_izquierdo(self, _event=None):
+        """El cursor entró al panel izquierdo: la rueda del mouse pasa a desplazarlo a él."""
         self._scroll_activo_canvas = self._left_scroll_canvas
         self.bind_all("<MouseWheel>", self._scroll_panel_mousewheel)
 
     def _desactivar_scroll_panel_izquierdo(self, _event=None):
+        """El cursor salió del panel izquierdo: la rueda deja de desplazarlo."""
         self._scroll_activo_canvas = None
         self.unbind_all("<MouseWheel>")
 
     def _actualizar_scroll_panel_derecho(self, _event=None):
+        """Recalcula el área desplazable del panel derecho cuando cambia su contenido."""
         if self._right_scroll_canvas is None:
             return
         self._right_scroll_canvas.configure(scrollregion=self._right_scroll_canvas.bbox("all"))
 
     def _ajustar_ancho_panel_derecho(self, event):
+        """Hace que el contenido del panel derecho ocupe todo el ancho del canvas al redimensionar."""
         if self._right_scroll_canvas is None or self._right_scroll_window is None:
             return
         self._right_scroll_canvas.itemconfigure(self._right_scroll_window, width=event.width)
 
     def _activar_scroll_panel_derecho(self, _event=None):
+        """El cursor entró al panel derecho: la rueda del mouse pasa a desplazarlo a él."""
         self._scroll_activo_canvas = self._right_scroll_canvas
         self.bind_all("<MouseWheel>", self._scroll_panel_mousewheel)
 
     def _desactivar_scroll_panel_derecho(self, _event=None):
+        """El cursor salió del panel derecho: la rueda deja de desplazarlo."""
         self._scroll_activo_canvas = None
         self.unbind_all("<MouseWheel>")
 
@@ -4723,7 +4761,9 @@ class ModernOrganizadorGUI(tk.Tk):
         vuelve a aplicar las restricciones del plan actual sobre los
         controles de la interfaz. Se llama cada vez que el estado de la
         licencia pudo haber cambiado (al iniciar, tras activar/verificar,
-        tras sincronizar con el servidor...). También corrige de una vez
+        tras consultar a Make, al empezar o gastar la demo...). Con la demo
+        en curso muestra lo que le queda (archivos, facturas y tiempo).
+        También corrige de una vez
         el estado si la suscripción ya venció pero seguía marcada como
         activa."""
         state = self.license_manager.state
@@ -4867,20 +4907,23 @@ class ModernOrganizadorGUI(tk.Tk):
             )
 
     def _sincronizar_licencia_silenciosa(self):
-        """Revisa el estado de la licencia contra el servidor sin
-        interrumpir al usuario con diálogos de error (solo muestra algo si
-        hay buenas noticias: una compra pendiente que ya se confirmó).
-        Se llama al arrancar y cada vez que la ventana recupera el foco
-        (por ejemplo, cuando el usuario vuelve de pagar en el navegador).
+        """Revisa el estado de la licencia sin interrumpir al usuario con
+        diálogos de error. Se llama al arrancar y cada vez que la ventana
+        recupera el foco (por ejemplo, cuando el usuario vuelve de pagar en
+        el navegador).
 
         Dos casos posibles:
         1. Hay una compra "pendiente" (el usuario iba a pagar un plan pero
-           todavía no se ha confirmado ni activado localmente): se
-           consulta si ya se puede resolver, y si sí, se activa la
-           licencia y se avisa al usuario con un mensaje de éxito.
-        2. Ya hay una licencia activada localmente: simplemente se revalida
-           contra el servidor (por si venció, se canceló, etc.) y se
-           actualiza el estado en silencio.
+           todavía no hay licencia local): se llama a `resolve_subscription`.
+           Con el cliente por código (`MakeCodeLicenseClient`) la respuesta
+           siempre es `activation_required`, así que aquí no pasa nada: el
+           cliente activa escribiendo en "Verificar licencia" el código que
+           le llegó por correo. (La activación automática de esta rama era
+           del flujo antiguo del Sheet.)
+        2. Ya hay una licencia activada localmente: se revalida con
+           `validate_license(force=False)`, que solo consulta a Make cerca
+           del vencimiento (ver `MakeCodeLicenseClient`), y se actualiza el
+           estado en silencio.
         """
         if self.license_manager.has_local_unrestricted_access():
             self.actualizar_estado_licencia()
@@ -4944,10 +4987,11 @@ class ModernOrganizadorGUI(tk.Tk):
         subscription_plan_code="",
         subscription_expires_at="",
     ):
-        """Activa formalmente una licencia contra el servidor (registra
-        este dispositivo) y, si sale bien, guarda el resultado localmente.
-        Devuelve `(True, "")` si se activó, o `(False, mensaje_de_error)`
-        si no."""
+        """Activa formalmente una licencia en Make (canjea el código y lo
+        liga a este equipo; con `MakeCodeLicenseClient`, `license_key` es el
+        código de activación) y, si sale bien, guarda el resultado
+        localmente. Devuelve `(True, "")` si se activó, o
+        `(False, mensaje_de_error)` si no."""
         activation = self.api_client.activate_license(email, license_key, self.license_manager.get_device_id())
         if activation.get("status") != "active":
             return False, activation.get("message", "No se pudo activar la licencia en este equipo.")
@@ -5287,6 +5331,7 @@ class ModernOrganizadorGUI(tk.Tk):
         )
 
     def _actualizar_progreso_facturas(self, value):
+        """Mueve la barra de progreso durante la extracción de facturas (se llama vía `after`)."""
         self.progreso["value"] = value
 
     def _finalizar_extraccion_facturas(self, total, es_demo=False, sin_procesar=0):
@@ -5821,9 +5866,9 @@ class ModernOrganizadorGUI(tk.Tk):
 
     def analizar_directorio(self):
         """Botón "Analizar directorio": recorre el origen SIN mover ni
-        copiar nada, solo cuenta cuántos archivos hay por categoría, y
-        vuelca el resumen en el registro. Sirve para revisar antes de
-        organizar de verdad."""
+        copiar nada, solo cuenta cuántos archivos hay por categoría (y
+        cuántos están vacíos, de 0 bytes), y vuelca el resumen en el
+        registro. Sirve para revisar antes de organizar de verdad."""
         origen = self.directorio_origen.get()
         if not origen or not os.path.exists(origen):
             messagebox.showwarning("Directorio inválido", "Selecciona un directorio de origen válido.")
@@ -5866,7 +5911,8 @@ class ModernOrganizadorGUI(tk.Tk):
         """Botón "Iniciar organización": valida todo lo necesario (acceso,
         rutas, filtro de tipo, uso mensual disponible), arma la lista
         completa de archivos a procesar, muestra un resumen para que el
-        usuario confirme, registra la corrida en `ProcessRecoveryManager`
+        usuario confirme (con la demo, avisa si hay más archivos que cupo),
+        registra la corrida en `ProcessRecoveryManager`
         (para poder reanudarla si algo falla) y arranca el hilo que
         realmente mueve/copia los archivos.
 
@@ -6013,12 +6059,21 @@ class ModernOrganizadorGUI(tk.Tk):
         1. Si se pidió cancelar, se guarda el progreso como "interrumpido"
            y se corta ahí (se puede reanudar después).
         2. Si el archivo ya no existe, se cuenta como error y se salta.
-        3. Si está activa la eliminación de duplicados, se calcula su
-           hash; si ya se vio ese mismo hash antes, va a cuarentena en vez
-           de al destino.
-        4. Si no es duplicado, se calcula su categoría/fecha de destino,
+        3. Si el archivo pesa 0 bytes se anota como "vacío" (se avisa al
+           final) y nunca se trata como duplicado: todos los vacíos tienen
+           el mismo hash.
+        4. Si está activa la eliminación de duplicados, se calcula su
+           hash; si ya se vio ese mismo hash antes, al mover va a la
+           cuarentena y al copiar simplemente no se copia.
+        5. Si no es duplicado, se calcula su categoría/fecha de destino,
            se genera un nombre único si hace falta, se copia o mueve, y se
            anota el resultado en el diario de recuperación.
+        6. Con la demo, cada archivo organizado con éxito descuenta uno; al
+           llegar al tope se corta limpio y el resto queda sin tocar.
+
+        Al final, si se pidió y la corrida terminó completa moviendo
+        archivos, se borran las carpetas vacías del origen
+        (`_eliminar_carpetas_vacias`).
 
         Cada evento (copiado, movido, duplicado, error) se anota en el
         diario para que, si el proceso se corta, se sepa exactamente por
@@ -6297,7 +6352,7 @@ class ModernOrganizadorGUI(tk.Tk):
     def vaciar_cuarentena(self):
         """Botón "Vaciar cuarentena ahora": muestra cuántos archivos y
         cuánto espacio hay, pide confirmación y, si el usuario acepta, los
-        borra DEFINITIVAMENTE (no van a la papelera de Windows). El borrado
+        borra DEFINITIVAMENTE (no van a la Papelera de Windows ni de macOS). El borrado
         corre en un hilo aparte para no congelar la ventana si hay muchos."""
         if self._run_in_progress:
             messagebox.showinfo("Proceso en curso", "Espera a que termine la organización antes de vaciar la cuarentena.")
@@ -6387,8 +6442,10 @@ class ModernOrganizadorGUI(tk.Tk):
     def _finalizar_proceso(self):
         """Se ejecuta cuando `_ejecutar_organizacion` termina con éxito
         (llamado vía `after` desde el hilo en segundo plano): actualiza
-        las estadísticas finales en pantalla, registra el uso mensual, y
-        escribe el resumen completo en el registro de actividad."""
+        las estadísticas finales en pantalla, registra el uso mensual (no
+        con la demo), escribe el resumen completo en el registro de
+        actividad, avisa si hubo archivos vacíos y, con la demo, cuántos
+        archivos le quedan o si se llegó al tope."""
         stats = self.organizador.estadisticas
         plan_code = self._plan_code_activo()
         features = self._plan_features(plan_code)

@@ -46,6 +46,7 @@ class SlimError(Exception):
 # --- Lectura mínima de archivos PE (.exe / .dll) --------------------------------------------------
 @dataclass
 class Section:
+    """Una entrada de la tabla de secciones del PE (posición virtual y en el archivo)."""
     index: int
     name: str
     virtual_size: int
@@ -56,6 +57,7 @@ class Section:
 
 @dataclass
 class PE:
+    """Archivo PE ya leído: sus bytes y las posiciones de cabeceras y secciones que hacen falta aquí."""
     data: bytes
     coff_offset: int  # inicio de IMAGE_FILE_HEADER (justo después de la firma "PE\0\0")
     optional_offset: int
@@ -67,18 +69,22 @@ class PE:
 
     @property
     def section_alignment(self) -> int:
+        """Alineación de las secciones en memoria (`SectionAlignment`)."""
         return struct.unpack_from("<I", self.data, self.optional_offset + 32)[0]
 
     @property
     def file_alignment(self) -> int:
+        """Alineación de las secciones dentro del archivo (`FileAlignment`)."""
         return struct.unpack_from("<I", self.data, self.optional_offset + 36)[0]
 
     @property
     def size_of_headers(self) -> int:
+        """Tamaño de todas las cabeceras juntas (`SizeOfHeaders`)."""
         return struct.unpack_from("<I", self.data, self.optional_offset + 60)[0]
 
     @property
     def data_directory_offset(self) -> int:
+        """Posición en el archivo de la tabla de directorios de datos (difiere en PE32 y PE32+)."""
         return self.optional_offset + (112 if self.is_pe32_plus else 96)
 
     def data_directory(self, index: int) -> tuple[int, int]:
@@ -89,6 +95,7 @@ class PE:
         return struct.unpack_from("<II", self.data, self.data_directory_offset + 8 * index)
 
     def rva_to_offset(self, rva: int) -> int | None:
+        """Convierte una dirección virtual (RVA) en posición dentro del archivo; `None` si no cae en ningún lado."""
         for section in self.sections:
             extent = max(section.virtual_size, section.raw_size)
             if section.virtual_address <= rva < section.virtual_address + extent:
@@ -97,11 +104,13 @@ class PE:
         return rva if rva < self.size_of_headers else None
 
     def read_cstring(self, offset: int) -> str:
+        """Lee un texto terminado en `\\0` (por ejemplo el nombre de una DLL importada)."""
         end = self.data.index(b"\0", offset)
         return self.data[offset:end].decode("ascii", "replace")
 
 
 def parse_pe(data: bytes) -> PE:
+    """Lee las cabeceras MZ/PE/COFF y la tabla de secciones; lanza `SlimError` si no es un PE válido."""
     if len(data) < 0x40 or data[:2] != b"MZ":
         raise SlimError("no es un archivo PE (falta la cabecera MZ)")
     pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
@@ -200,6 +209,7 @@ def prune_unreachable(folder: Path, entry: str = "tesseract.exe") -> list[tuple[
 
 # --- Paso 2: quitar la información de depuración -----------------------------------------------------
 def _align_up(value: int, alignment: int) -> int:
+    """Redondea `value` hacia arriba al múltiplo de `alignment` (sin cambios si es 0)."""
     return (value + alignment - 1) // alignment * alignment if alignment else value
 
 
@@ -307,6 +317,7 @@ Runner = Callable[..., str]
 
 
 def run_process(args: Sequence[str], env: dict[str, str], cwd: Path | None = None) -> str:
+    """Ejecuta un programa y devuelve su salida; lanza `SlimError` si no arranca o falla."""
     try:
         result = subprocess.run(
             [str(a) for a in args],
@@ -359,10 +370,12 @@ def selftest(folder: Path, runner_prefix: Sequence[str] = (), run: Runner = run_
 
 # --- Línea de comandos -----------------------------------------------------------------------------------
 def folder_size(folder: Path) -> int:
+    """Tamaño total en bytes de todos los archivos de la carpeta (para el resumen antes/después)."""
     return sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Punto de entrada de la línea de comandos (lo llama `build.ps1`). Devuelve 0 si todo salió bien."""
     parser = argparse.ArgumentParser(description="Adelgaza vendor/tesseract (Windows) antes de empaquetarlo.")
     parser.add_argument("folder", type=Path, help="carpeta con tesseract.exe, sus DLL y tessdata")
     parser.add_argument("--no-prune", action="store_true", help="no borrar las DLL que tesseract.exe no necesita")
