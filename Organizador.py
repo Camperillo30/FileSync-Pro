@@ -32,10 +32,6 @@ hace cada parte (buscar la clase/función por nombre para ir directo):
   pagar en Wompi; el código se canjea contra un webhook de Make, que lo
   liga a un solo equipo y responde con una firma que la app verifica.
   El mismo webhook registra la demo única de cada equipo (`request_demo`).
-- `LegacySheetsLicenseClient` y `LicenseApiClient`: formas anteriores de
-  consultar si una licencia es válida (CSV público de Google Sheets y
-  API REST propia, ya retirada del repositorio). Quedan en el archivo pero
-  la app ya no los crea en ningún lado.
 - `ModernOrganizadorGUI`: la ventana principal (hereda de `tk.Tk`). Aquí
   vive toda la interfaz: botones, paneles, modo oscuro, el tutorial guiado,
   el flujo de compra/activación de licencia, la demo, la cuarentena de
@@ -510,9 +506,6 @@ TEMA_OSCURO = {
     "tutorial_fg": "#5cb1e8",
     "scrollbar_trough": "#1a232c",
 }
-# Restos de los flujos de licencia anteriores: ningún código las lee hoy.
-DEFAULT_API_BASE_URL = os.getenv("FILESYNC_PRO_API_URL", "").strip()  # API REST propia (retirada).
-SHEETS_LICENSE_URL = os.getenv("FILESYNC_PRO_LICENSE_CSV_URL", "").strip()  # Google Sheet en CSV (retirado).
 # Licencias por código de activación (Make): URL del webhook de canje y secreto con el que Make firma
 # cada respuesta. Ambos viajan en desktop_runtime_config.json (lo genera build.ps1 desde el .env).
 LICENSE_REDEEM_URL = os.getenv("FILESYNC_PRO_LICENSE_REDEEM_URL", "").strip()
@@ -1963,13 +1956,6 @@ class LicenseManager:
         desarrollador, ver `is_developer_access_enabled`)."""
         return (os.getenv("COMPUTERNAME") or platform.node() or "").strip()
 
-    def is_owner_device(self):
-        """Deshabilitado a propósito: la app distribuida nunca debe traer
-        embebida una identidad de equipo con acceso privilegiado. Siempre
-        devuelve `False` en el cliente que reciben los usuarios."""
-        # Nunca se embebe en la app distribuida una identidad de equipo privilegiada.
-        return False
-
     @staticmethod
     def _parse_datetime(value):
         """Convierte un texto ISO-8601 (posiblemente con "Z" al final) en
@@ -2003,13 +1989,10 @@ class LicenseManager:
         return hashlib.sha256(f"filesync-dev|{LicenseManager.get_demo_device_id()}".encode("utf-8")).hexdigest()
 
     def local_unrestricted_access_mode(self):
-        """Devuelve "owner", "developer" o cadena vacía, según por qué
-        razón (si aplica) este equipo tiene acceso sin restricciones sin
-        necesidad de una licencia real. En la práctica solo puede salir
-        "developer": `is_owner_device` siempre devuelve `False` (las ramas
-        "owner" de la interfaz se conservan por compatibilidad)."""
-        if self.is_owner_device():
-            return "owner"
+        """Devuelve "developer" si este equipo tiene acceso sin restricciones
+        (modo desarrollador, ver `is_developer_access_enabled`) o cadena vacía
+        si no. La app distribuida nunca trae embebida una identidad de equipo
+        con acceso privilegiado."""
         if self.is_developer_access_enabled():
             return "developer"
         return ""
@@ -2029,7 +2012,7 @@ class LicenseManager:
 
     def is_feature_unlocked(self):
         """¿Puede el usuario usar las funciones de la app ahora mismo?
-        Sí, si tiene acceso sin restricciones (developer/owner), o si su
+        Sí, si tiene acceso sin restricciones (modo desarrollador), o si su
         licencia está activa y no vencida. Si estaba activa pero la
         suscripción ya venció, se marca como inactiva en este mismo
         momento (efecto colateral: además de responder, actualiza y
@@ -2498,232 +2481,6 @@ class ProcessRecoveryManager:
             return snapshot
 
         return snapshot
-
-
-class LegacySheetsLicenseClient:
-    """RETIRADO: la app ya no crea este cliente (hoy usa `MakeCodeLicenseClient`).
-
-    Era el cliente de licencias sin backend propio: leía un Google Sheet
-    publicado como CSV, con columnas `email | plan | estado | fecha_pago`
-    escritas por Make tras cada pago, y activaba solo con el correo. Se
-    abandonó el 2 oct 2026 porque el CSV público exponía los datos de todos
-    los clientes y conocer el correo de alguien bastaba para activar su
-    licencia. Se conserva solo como referencia.
-    """
-
-    _CONNECTION_MSG = (
-        "No pudimos conectar con el servicio de licencias en este momento.\n\n"
-        "Verifica tu conexión a internet e inténtalo nuevamente."
-    )
-    _NO_URL_MSG = (
-        "El servicio de licencias no está configurado en esta instalación.\n\n"
-        "Contacta al soporte para obtener asistencia."
-    )
-
-    def __init__(self, sheets_url):
-        self.sheets_url = (sheets_url or "").strip()
-
-    def _fetch_rows(self, timeout=15):
-        """Descarga el CSV del Sheet y devuelve una lista de dicts."""
-        if not self.sheets_url:
-            raise LicensingError(self._NO_URL_MSG)
-        req = request.Request(self.sheets_url, headers={"User-Agent": "FileSync-Pro/3"})
-        try:
-            with request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8-sig")
-        except error.URLError as exc:
-            raise LicensingError(self._CONNECTION_MSG) from exc
-
-        reader = csv.DictReader(io.StringIO(raw))
-        return [
-            {k.strip().lower(): v.strip() for k, v in row.items()}
-            for row in reader
-        ]
-
-    def _find_row(self, email, plan_code=None):
-        """Busca la primera fila activa que coincida con el email (y opcionalmente el plan)."""
-        email_norm = email.strip().lower()
-        rows = self._fetch_rows()
-        for row in rows:
-            if row.get("email", "").lower() != email_norm:
-                continue
-            if plan_code and row.get("plan", "").lower() != plan_code.lower():
-                continue
-            if row.get("estado", "").lower() in {"activo", "active", "authorized"}:
-                return row
-        return None
-
-    def warm_up(self):
-        """No-op: sin servidor que despertar."""
-        pass
-
-    def health_check(self, timeout=15):
-        """Verifica que el Sheet sea accesible."""
-        try:
-            self._fetch_rows(timeout=timeout)
-            return {"status": "ok"}
-        except LicensingError:
-            return {"status": "error"}
-
-    def resolve_subscription(self, email, plan_code):
-        """
-        Consulta el Sheet para verificar si el email tiene una suscripción activa.
-        Devuelve un dict compatible con el formato que espera la app.
-        """
-        row = self._find_row(email, plan_code)
-        if row is None:
-            # Intentar sin filtro de plan (por si el plan guardado difiere levemente)
-            row = self._find_row(email)
-        if row is None:
-            return {"status": "not_found"}
-
-        plan = row.get("plan", plan_code).lower()
-        fecha = row.get("fecha_pago", "").strip()
-
-        # Calcular fecha de vencimiento = fecha_pago + 30 días
-        expires_at = self._calcular_vencimiento(fecha, dias=30)
-
-        # Clave determinística: no requiere BD
-        raw_key = f"{email.lower()}:{plan}:filesync"
-        license_key = "FS-" + hashlib.sha256(raw_key.encode()).hexdigest()[:20].upper()
-
-        return {
-            "status": "active",
-            "email": email,
-            "plan_code": plan,
-            "license_key": license_key,
-            "subscription_id": f"sheets:{email.lower()}",
-            "next_payment_date": expires_at,
-        }
-
-    def activate_license(self, email, license_key, device_id):
-        """
-        Sin servidor propio no hay activación remota.
-        La verificación de dispositivos se maneja localmente en LicenseManager.
-        Siempre aprueba si la clave es válida (generada por resolve_subscription).
-        """
-        return {
-            "status": "active",
-            "email": email,
-            "license_key": license_key,
-            "subscription_id": f"sheets:{email.lower()}",
-        }
-
-    def validate_license(self, email, license_key, device_id, force=False):
-        """Re-verifica en el Sheet que la suscripción siga activa."""
-        row = self._find_row(email)
-        if row is None:
-            return {"status": "inactive"}
-        plan = row.get("plan", "").lower()
-        fecha = row.get("fecha_pago", "").strip()
-        expires_at = self._calcular_vencimiento(fecha, dias=30)
-        return {
-            "status": "active",
-            "email": email,
-            "plan_code": plan,
-            "license_key": license_key,
-            "next_payment_date": expires_at,
-        }
-
-    @staticmethod
-    def _calcular_vencimiento(fecha_pago, dias=30):
-        """
-        Calcula la fecha de vencimiento sumando `dias` a la fecha_pago.
-        Soporta formatos ISO 8601 y DD/MM/YYYY.
-        Devuelve string ISO 8601 o vacío si no puede parsear.
-        """
-        if not fecha_pago:
-            return ""
-        formatos = [
-            "%Y-%m-%dT%H:%M:%S.%fZ",
-            "%Y-%m-%dT%H:%M:%SZ",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d",
-            "%d/%m/%Y",
-        ]
-        for fmt in formatos:
-            try:
-                base = dt.datetime.strptime(fecha_pago[:len(fmt) + 5].strip(), fmt)
-                vencimiento = base + dt.timedelta(days=dias)
-                return vencimiento.strftime("%Y-%m-%dT%H:%M:%S")
-            except ValueError:
-                continue
-        return ""
-
-
-class LicenseApiClient:
-    """RETIRADO: la app ya no crea este cliente (hoy usa `MakeCodeLicenseClient`).
-
-    Era el cliente HTTP de la API REST propia de licencias (FastAPI, con
-    `/v1/licenses/activate`, `/v1/licenses/validate` y `/health`), cuyo
-    servidor ya se quitó del repositorio. Se conserva solo como referencia.
-    """
-
-    _CONNECTION_MSG = (
-        "No pudimos conectar con el servicio de licencias en este momento.\n\n"
-        "Verifica tu conexiÃ³n a internet e intÃ©ntalo nuevamente."
-    )
-    _NO_URL_MSG = (
-        "El servicio de licencias no estÃ¡ configurado en esta instalaciÃ³n.\n\n"
-        "Contacta al soporte para obtener asistencia."
-    )
-
-    def __init__(self, api_url):
-        self.api_url = (api_url or "").strip().rstrip("/")
-
-    def _request(self, method, endpoint, payload=None, timeout=15):
-        """Hace una petición HTTP genérica (GET/POST) al backend y
-        devuelve el JSON de la respuesta ya decodificado. Cualquier
-        problema de red, HTTP o de formato se traduce en `LicensingError`
-        con un mensaje amigable para mostrar al usuario."""
-        if not self.api_url:
-            raise LicensingError(self._NO_URL_MSG)
-        body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        req = request.Request(
-            f"{self.api_url}{endpoint}", data=body, method=method,
-            headers={"User-Agent": "FileSync-Pro/3", "Content-Type": "application/json"},
-        )
-        try:
-            with request.urlopen(req, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (error.URLError, error.HTTPError, json.JSONDecodeError) as exc:
-            raise LicensingError(self._CONNECTION_MSG) from exc
-
-    def warm_up(self):
-        """Hace un ping silencioso a `/health` para "despertar" el
-        servidor (útil si está alojado en un plan gratuito que se duerme
-        tras inactividad), sin molestar al usuario si falla."""
-        try:
-            self._request("GET", "/health", timeout=5)
-        except LicensingError:
-            pass
-
-    def health_check(self, timeout=15):
-        """Comprueba si el backend está respondiendo."""
-        try:
-            return self._request("GET", "/health", timeout=timeout)
-        except LicensingError:
-            return {"status": "error"}
-
-    def activate_license(self, email, activation_code, device_id):
-        """Activa una licencia en este dispositivo usando el código de
-        activación."""
-        return self._request("POST", "/v1/licenses/activate", {
-            "email": email, "activation_code": activation_code, "device_id": device_id,
-        })
-
-    def validate_license(self, email, license_key, device_id, force=False):
-        """Verifica que la licencia siga activa en este dispositivo."""
-        return self._request("POST", "/v1/licenses/validate", {
-            "email": email, "license_key": license_key, "device_id": device_id,
-        })
-
-    def resolve_subscription(self, email, plan_code):
-        """Este cliente no puede "adivinar" una suscripción a partir del
-        correo (a diferencia del cliente de Sheets): siempre exige pasar
-        por el flujo explícito de activación con código."""
-        # La activación nunca se deduce solo del correo.
-        return {"status": "activation_required", "email": email, "plan_code": plan_code}
 
 
 class MakeCodeLicenseClient:
@@ -3293,7 +3050,7 @@ class ModernOrganizadorGUI(tk.Tk):
 
     def _plan_code_activo(self):
         """Determina qué plan aplica AHORA MISMO al usuario:
-        - Acceso developer/owner -> se trata como "premium" (todo desbloqueado).
+        - Modo desarrollador -> se trata como "premium" (todo desbloqueado).
         - Licencia activa pero sin plan guardado (licencias antiguas) -> "legacy".
         - Licencia activa con un plan guardado -> ese plan.
         - Sin licencia activa -> el plan por defecto (básica), que es el
@@ -4774,10 +4531,7 @@ class ModernOrganizadorGUI(tk.Tk):
         self.subscription_email.set(state.get("subscription_email", ""))
         self.subscription_plan_code.set(state.get("subscription_plan_code", ""))
         access_mode = self.license_manager.local_unrestricted_access_mode()
-        if access_mode == "owner":
-            machine_name = self.license_manager.get_machine_name() or "este equipo"
-            text = f"Equipo propietario ({machine_name}) | Funciones desbloqueadas"
-        elif access_mode == "developer":
+        if access_mode == "developer":
             text = "Modo desarrollador activo | Pruebas locales"
         elif state.get("status") == "active":
             plan_name = self._nombre_plan(self._plan_code_activo())
@@ -5475,8 +5229,6 @@ class ModernOrganizadorGUI(tk.Tk):
     def comprar_licencia(self):
         """Flujo completo de compra: pide y confirma el correo, deja
         elegir el plan, y según el tipo de acceso del equipo:
-        - Equipo "owner": avisa que ya tiene todo desbloqueado, no hace
-          falta comprar.
         - Modo "developer": simula la compra sin cobrar ni abrir Wompi
           (para poder probar el flujo completo en desarrollo).
         - Caso normal: guarda la intención de compra localmente
@@ -5515,14 +5267,6 @@ class ModernOrganizadorGUI(tk.Tk):
         plan_base, plan_freq = self._dividir_plan_frecuencia(plan_code)
         plan_name = self._nombre_plan(plan_base)
         access_mode = self.license_manager.local_unrestricted_access_mode()
-        if access_mode == "owner":
-            machine_name = self.license_manager.get_machine_name() or "este equipo"
-            self.log(f"El equipo propietario {machine_name} ya tiene acceso completo. No hace falta comprar el plan {plan_base}.", "info")
-            messagebox.showinfo(
-                "Equipo propietario",
-                f"Este equipo ({machine_name}) ya tiene todas las funciones desbloqueadas.\n\nNo hace falta comprar ni activar una licencia aquí.",
-            )
-            return
         if access_mode == "developer":
             self.log(f"Simulación de compra en modo desarrollador para {email}. Plan {plan_base} ({plan_freq}).", "info")
             messagebox.showinfo(
@@ -5548,7 +5292,7 @@ class ModernOrganizadorGUI(tk.Tk):
     def verificar_licencia(self):
         """Botón "Verificar licencia": revisa el estado actual y decide
         qué hacer según el caso:
-        - Equipo owner/developer: informa que ya tiene acceso completo.
+        - Modo desarrollador: informa que ya tiene acceso completo.
         - No hay licencia guardada localmente: pide el correo con el que se
           pagó en Wompi y luego el código de activación que llegó a ese
           correo (`_verificar_suscripcion_pendiente`), y lo canjea en Make.
@@ -5558,15 +5302,6 @@ class ModernOrganizadorGUI(tk.Tk):
           correo: Make renueva la misma licencia sin código nuevo.
         """
         access_mode = self.license_manager.local_unrestricted_access_mode()
-        if access_mode == "owner":
-            machine_name = self.license_manager.get_machine_name() or "este equipo"
-            self.actualizar_estado_licencia()
-            self.log(f"Equipo propietario detectado: {machine_name}.", "exito")
-            messagebox.showinfo(
-                "Equipo propietario",
-                f"Este equipo ({machine_name}) es propietario de la app.\n\nLa app funciona aquí sin limitaciones de licencia.",
-            )
-            return
         if access_mode == "developer":
             self.actualizar_estado_licencia()
             self.log("Acceso de desarrollador habilitado en este equipo.", "exito")
