@@ -14,13 +14,7 @@
 
 ## Descargar
 
-| Sistema | Descarga |
-| --- | --- |
-| Windows 10 u 11 | [FileSync-Pro-Setup.exe](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-Setup.exe) |
-| Mac con Apple Silicon (M1 o posterior) | [FileSync-Pro-macOS-AppleSilicon.dmg](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-AppleSilicon.dmg) |
-| Mac con Intel | [FileSync-Pro-macOS-Intel.dmg](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-Intel.dmg) |
-
-Todas las versiones y sus novedades están en [Releases](https://github.com/Camperillo30/FileSync-Pro/releases). Mientras solo haya versiones de prueba (*pre-release*), como la 3.1.0, estos enlaces no funcionan: descarga desde [la versión 3.1.0](https://github.com/Camperillo30/FileSync-Pro/releases/tag/v3.1.0). La app incluye una demo gratis de 24 horas.
+**Por ahora FileSync Pro está en etapa de pruebas y todavía no se puede descargar.** Cuando salga la versión estable, aquí estarán los instaladores para Windows 10/11 y para Mac (Apple Silicon e Intel). ¿Quieres saber cuándo sale? Escribe por [WhatsApp](https://wa.me/573054139394) o a `filesyncpro@gmail.com`.
 
 > [!CAUTION]
 > **FileSync Pro está en beta.** Puede tener errores, cambiar sin aviso o mover archivos de forma inesperada. Pruébala primero con copias, no la uses sobre carpetas importantes sin respaldo ni la instales en equipos de trabajo hasta que salga la versión estable.
@@ -97,7 +91,7 @@ Para comprobar el OCR de un ejecutable ya compilado: `--ocr-selftest` (debe term
 
 ### Publicar una versión
 
-Los enlaces de *Descargar* apuntan siempre a la última versión publicada en Releases (las *pre-release* no cuentan como "última"), con nombres de archivo fijos.
+Cuando haya versión estable, los enlaces de *Descargar* pueden apuntar a `https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/<archivo>`, que siempre lleva a la última versión publicada (las *pre-release* no cuentan como "última"). Los nombres de archivo son fijos: `FileSync-Pro-Setup.exe`, `FileSync-Pro-macOS-AppleSilicon.dmg` y `FileSync-Pro-macOS-Intel.dmg`.
 
 1. Sube `APP_VERSION` en `Organizador.py` (por ejemplo a `3.2.0`) y haz *Commit and Push* en PyCharm.
 2. Crea la etiqueta en PyCharm (*Git > New Tag*): `v3.2.0` para una versión definitiva, o `v3.2.0-beta` (con guion) para una pre-release.
