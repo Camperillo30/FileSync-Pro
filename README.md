@@ -22,6 +22,9 @@
 
 Todas las versiones y sus novedades están en [Releases](https://github.com/Camperillo30/FileSync-Pro/releases). Mientras solo haya versiones de prueba (*pre-release*), como la 3.1.0, estos enlaces no funcionan: descarga desde [la versión 3.1.0](https://github.com/Camperillo30/FileSync-Pro/releases/tag/v3.1.0). La app incluye una demo gratis de 24 horas.
 
+> [!CAUTION]
+> **FileSync Pro está en beta.** Puede tener errores, cambiar sin aviso o mover archivos de forma inesperada. Pruébala primero con copias, no la uses sobre carpetas importantes sin respaldo ni la instales en equipos de trabajo hasta que salga la versión estable.
+
 ## Funciones
 
 - **Organización automática.** Clasifica por categoría (documentos, imágenes, video, audio, código, comprimidos...) y por año y mes. En las fotos usa la fecha EXIF cuando existe. Se puede usar la misma carpeta como origen y destino.
