@@ -55,6 +55,7 @@ Todas las versiones y sus novedades están en [Releases](https://github.com/Camp
 - `packaging/notas_version.md`: notas que acompañan cada versión publicada.
 - `tests/`: pruebas automáticas (`pytest`).
 - `assets/`: íconos y logo.
+- `docs/index.html`: el sitio web de FileSync Pro, la misma página publicada en [Sitio web](https://claude.ai/artifact/7Pc89QFJihBon8PRmTnSno). Es un solo archivo HTML, sin dependencias.
 
 ## Desarrollo
 

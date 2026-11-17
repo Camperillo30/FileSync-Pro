@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>FileSync Pro</title>
+<meta name="description" content="FileSync Pro: app de escritorio para Windows y Mac que organiza tus archivos y lee tus facturas. Versión beta.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,500;6..96,700&family=Montserrat:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Sitio web de FileSync Pro. Copia de la página publicada en https://claude.ai/artifact/7Pc89QFJihBon8PRmTnSno
+   Hermana de la web de CipherVault: negro + dorado, portada con animación, cierre con contacto. */
+:root {
+  color-scheme: dark;
+  --bg: #0b0b0c;
+  --panel: #151515;
+  --panel-2: #1c1b19;
+  --line: #2c2a25;
+  --gold: #d2ac47;
+  --gold-soft: #f4e883;
+  --text: #f2f2f2;
+  --muted: #a8a49a;
+  --on-gold: #14120c;
+  --f-display: "Bodoni Moda", "Didot", Georgia, serif;
+  --f-body: "Montserrat", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before { animation: none !important; transition: none !important; } }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--f-body); font-size: 16px; line-height: 1.6; }
+img { max-width: 100%; }
+.wrap { max-width: 1080px; margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3, h4 { margin: 0; text-wrap: balance; line-height: 1.15; }
+p, ul { margin: 0; }
+a { color: var(--gold-soft); }
+:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; border-radius: 4px; }
+
+h2 { font-family: var(--f-display); font-weight: 700; font-size: clamp(30px, 4.6vw, 46px); }
+.lead { color: var(--muted); max-width: 60ch; font-size: 17px; }
+.center { text-align: center; justify-items: center; }
+.center .lead { margin-inline: auto; }
+
+.label { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; background: var(--gold); color: var(--on-gold); }
+.label.outline { background: transparent; color: var(--gold); border: 1px solid var(--gold); }
+
+section { padding-block: 88px; }
+section + section { border-top: 1px solid var(--line); }
+.head { display: grid; gap: 16px; margin-bottom: 44px; }
+
+/* Hero */
+.hero { background: radial-gradient(ellipse 60% 80% at 80% 40%, #221d10 0%, var(--bg) 70%); padding-block: 72px; }
+.hero .wrap { display: grid; grid-template-columns: 1.1fr .9fr; gap: 40px; align-items: center; }
+.hero-copy { min-width: 0; display: grid; gap: 22px; justify-items: center; text-align: center; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .18em; font-size: 13px; color: var(--muted); text-transform: uppercase; }
+.hero h1 { font-family: var(--f-display); font-weight: 700; font-size: clamp(50px, 8.4vw, 96px); line-height: .95;
+  background: linear-gradient(180deg, var(--gold-soft) 0%, var(--gold) 55%, #9c7a24 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero .lead { color: var(--text); opacity: .86; font-size: 18px; max-width: 46ch; }
+.beta { max-width: 46ch; font-size: 14px; color: var(--gold-soft); background: rgba(210,172,71,.10); border: 1px solid rgba(210,172,71,.45); border-radius: 10px; padding: 10px 14px; }
+.cta { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 10px; font-family: var(--f-body); font-weight: 700; font-size: 15px; text-decoration: none; border: 1px solid var(--gold); transition: background .15s, color .15s; }
+.btn.solid { background: var(--gold); color: var(--on-gold); }
+.btn.solid:hover { background: var(--gold-soft); }
+.btn.ghost { color: var(--gold); }
+.btn.ghost:hover { background: rgba(210,172,71,.12); }
+.hero-art { min-width: 0; display: flex; justify-content: center; }
+.hero-art svg { width: 100%; max-width: 440px; height: auto; display: block; }
+.hero-art text { font-family: var(--f-mono); }
+/* Archivos que caen de Descargas a su carpeta */
+.fly { animation: fly 7.5s cubic-bezier(.55,0,.25,1) infinite; }
+.fly.b { animation-delay: -2.5s; }
+.fly.c { animation-delay: -5s; }
+@keyframes fly {
+  0%, 12% { transform: translate(0, 0); opacity: 1; }
+  45% { transform: var(--to); opacity: 1; }
+  55%, 100% { transform: var(--to); opacity: 0; }
+}
+.count { animation: pulse 7.5s ease-in-out infinite; }
+@keyframes pulse { 0%, 40% { opacity: .55; } 50%, 60% { opacity: 1; } 100% { opacity: .55; } }
+@media (max-width: 820px) {
+  .hero .wrap { grid-template-columns: 1fr; }
+  .hero-art { order: -1; }
+  .hero-art svg { max-width: 300px; }
+}
+
+/* Problema */
+.boxes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .boxes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .boxes { grid-template-columns: 1fr; } }
+.box { min-width: 0; background: var(--panel-2); border-radius: 14px; padding: 24px; display: grid; gap: 10px; align-content: start; text-align: left; }
+.box .k { font-family: var(--f-mono); font-size: 12px; color: var(--gold); letter-spacing: .04em; }
+.box h3 { font-size: 17px; font-weight: 700; }
+.box p { color: var(--muted); font-size: 15px; }
+
+/* Funciones */
+.feats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 34px 32px; }
+@media (max-width: 900px) { .feats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .feats { grid-template-columns: 1fr; } }
+.feat { min-width: 0; display: grid; grid-template-columns: 44px 1fr; gap: 14px; align-items: start; }
+.ico { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; color: var(--gold); background: rgba(210,172,71,.12); }
+.feat h3 { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+.feat p { color: var(--muted); font-size: 15px; }
+.feat kbd { font-family: var(--f-mono); font-size: 12px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); }
+.pill { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--gold); border: 1px solid rgba(210,172,71,.5); border-radius: 999px; padding: 1px 8px; margin-left: 6px; white-space: nowrap; vertical-align: 2px; }
+
+/* Factura */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+.split > * { min-width: 0; }
+@media (max-width: 820px) { .split { grid-template-columns: 1fr; } }
+.checks { list-style: none; padding: 0; display: grid; gap: 10px; }
+.checks li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; }
+.checks li::before { content: ""; width: 8px; height: 8px; margin: 9px 0 0 4px; background: var(--gold); transform: rotate(45deg); }
+.invoice { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+.invoice-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.invoice-top b { font-family: var(--f-mono); font-weight: 500; font-size: 13px; }
+.ok { font-size: 12px; font-weight: 700; color: #8fd6a4; border: 1px solid rgba(143,214,164,.45); border-radius: 999px; padding: 2px 10px; }
+.fields { width: 100%; border-collapse: collapse; font-size: 14px; }
+.fields td { padding: 11px 20px; border-bottom: 1px solid var(--line); }
+.fields tr:last-child td { border-bottom: 0; }
+.fields td:first-child { color: var(--muted); width: 40%; }
+.fields td:last-child { font-family: var(--f-mono); text-align: right; font-variant-numeric: tabular-nums; }
+.fields tr.total td { color: var(--gold-soft); font-weight: 700; }
+.fields tr.total td:last-child { font-size: 16px; }
+.invoice-foot { padding: 10px 20px; font-size: 12px; color: var(--muted); border-top: 1px dashed var(--line); font-style: italic; }
+
+/* Demo / descarga */
+.dl { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 26px; display: grid; gap: 14px; }
+.dl h3 { font-size: 15px; font-weight: 700; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.tag { font-family: var(--f-mono); font-size: 12px; font-weight: 500; color: var(--gold); border: 1px solid var(--gold); border-radius: 6px; padding: 1px 7px; }
+.dl .row { display: grid; grid-template-columns: 28px 1fr auto; gap: 12px; align-items: center; padding: 14px 16px; border-radius: 10px; background: var(--panel-2); text-decoration: none; color: var(--text); border: 1px solid transparent; transition: border-color .15s; }
+.dl a.row:hover { border-color: var(--gold); }
+.dl a.row svg { color: var(--gold); }
+.dl .row b { display: block; font-size: 15px; }
+.dl .row div span { color: var(--muted); font-size: 13px; }
+.dl a.row i { font-style: normal; color: var(--gold); font-weight: 700; }
+.note { color: var(--muted); font-size: 13px; font-style: italic; }
+.limits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 6px; }
+.limits div { min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 2px; }
+.limits b { font-family: var(--f-display); font-size: 30px; color: var(--gold); line-height: 1; font-variant-numeric: lining-nums; }
+.limits span { font-size: 13px; color: var(--muted); }
+
+/* Pasos */
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; position: relative; }
+.steps::before { content: ""; position: absolute; top: 36px; left: 16%; right: 16%; height: 1px; background: linear-gradient(90deg, transparent, var(--gold), transparent); }
+.step { min-width: 0; display: grid; gap: 12px; justify-items: center; text-align: center; position: relative; }
+.bubble { width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; background: var(--bg); border: 1px solid var(--gold); color: var(--gold); }
+.step h3 { font-size: 18px; text-decoration: underline; text-underline-offset: 5px; text-decoration-color: var(--gold); }
+.step p { color: var(--muted); font-size: 15px; max-width: 30ch; }
+@media (max-width: 700px) { .steps { grid-template-columns: 1fr; } .steps::before { display: none; } }
+
+/* Licencias */
+.plans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: stretch; text-align: left; }
+@media (max-width: 860px) { .plans { grid-template-columns: 1fr; max-width: 460px; margin-inline: auto; } }
+.plan { min-width: 0; border: 1px solid var(--line); border-radius: 16px; padding: 28px; display: grid; gap: 12px; align-content: start; }
+.plan h3 { font-size: 20px; font-weight: 700; }
+.price { font-family: var(--f-display); font-weight: 700; font-size: 40px; color: var(--gold); font-variant-numeric: lining-nums tabular-nums; line-height: 1; }
+.per { color: var(--muted); font-size: 13px; margin-top: -4px; }
+.uses { font-family: var(--f-mono); font-size: 13px; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; justify-self: start; }
+.plan .desc { font-size: 15px; }
+.plan ul { padding-left: 18px; display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
+.plan.hl { background: var(--gold); border-color: var(--gold); color: var(--on-gold); }
+.plan.hl .price { color: var(--text); text-shadow: 0 1px 0 rgba(0,0,0,.25); }
+.plan.hl .per, .plan.hl ul { color: #3a3120; }
+.plan.hl .uses { color: var(--on-gold); border-color: rgba(20,18,12,.3); }
+.plan.hl .label { background: var(--on-gold); color: var(--gold-soft); justify-self: start; }
+.packs { margin-top: 28px; border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; }
+.packs table { width: 100%; border-collapse: collapse; min-width: 520px; font-size: 15px; }
+.packs th, .packs td { padding: 13px 18px; text-align: left; border-bottom: 1px solid var(--line); }
+.packs tr:last-child td { border-bottom: 0; }
+.packs th { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.packs td.n { color: var(--gold); font-weight: 700; }
+.packs td.s { color: var(--muted); }
+.pay { margin-top: 22px; display: grid; gap: 18px; justify-items: center; text-align: center; color: var(--muted); font-size: 15px; }
+
+/* Por qué */
+.why { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
+@media (max-width: 800px) { .why { grid-template-columns: 1fr; } }
+.why div { min-width: 0; display: grid; gap: 8px; padding-left: 20px; border-left: 2px solid var(--gold); }
+.why h3 { font-size: 18px; }
+.why p { color: var(--muted); font-size: 15px; }
+
+/* Cifras */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
+@media (max-width: 860px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat { min-width: 0; display: grid; gap: 6px; align-content: start; }
+.stat .big { font-family: var(--f-display); font-weight: 700; font-size: clamp(38px, 5vw, 54px); color: var(--gold); line-height: 1; font-variant-numeric: lining-nums; }
+.stat h3 { font-size: 15px; }
+.stat p { color: var(--muted); font-size: 14px; }
+.aside { margin-top: 36px; padding: 18px 22px; border-radius: 12px; background: var(--panel-2); color: var(--text); }
+
+/* Cierre */
+.close h2 { font-size: clamp(32px, 5vw, 52px); }
+.divider { height: 1px; background: var(--line); margin-block: 56px 40px; border: 0; }
+.foot { display: grid; grid-template-columns: 48fr 52fr; gap: 32px; text-align: left; }
+.foot > * { min-width: 0; display: grid; gap: 8px; align-content: start; }
+@media (max-width: 700px) { .foot { grid-template-columns: 1fr; } }
+.foot h3 { font-size: 17px; }
+.foot p { color: var(--muted); font-size: 15px; }
+.contact { display: grid; gap: 6px; font-size: 15px; }
+.contact a { font-weight: 600; text-decoration: none; }
+.contact a:hover { text-decoration: underline; }
+.contact .sel { user-select: all; color: var(--gold-soft); font-weight: 600; }
+footer { border-top: 1px solid var(--line); }
+footer .wrap { padding-block: 22px; color: var(--muted); font-size: 13px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <div class="hero-copy">
+        <div class="brand">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          Una app de S.C.A
+        </div>
+        <span class="label">Versión beta</span>
+        <h1>FileSync Pro</h1>
+        <p class="lead">La app de escritorio para Windows y Mac que ordena tus archivos sola, lee tus facturas y te deja deshacer cualquier cambio con un clic.</p>
+        <p class="beta">⚠️ FileSync Pro está en etapa de pruebas: todavía no está lista para descargar ni para comprar.</p>
+        <div class="cta">
+          <a class="btn solid" href="https://wa.me/573054139394">Avísame cuando salga</a>
+          <a class="btn ghost" href="#licencias">Ver licencias</a>
+        </div>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <svg viewBox="0 0 440 400">
+          <defs>
+            <linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f4e883"/><stop offset=".55" stop-color="#d2ac47"/><stop offset="1" stop-color="#9c7a24"/></linearGradient>
+          </defs>
+          <!-- Ventana -->
+          <rect x="10" y="10" width="420" height="380" rx="26" fill="#151515" stroke="url(#g)" stroke-width="2.5"/>
+          <circle cx="38" cy="36" r="5" fill="#2c2a25"/><circle cx="56" cy="36" r="5" fill="#2c2a25"/><circle cx="74" cy="36" r="5" fill="#2c2a25"/>
+          <line x1="10" y1="58" x2="430" y2="58" stroke="#2c2a25" stroke-width="1.5"/>
+          <!-- Descargas desordenada -->
+          <text x="40" y="92" fill="#a8a49a" font-size="13">Descargas/</text>
+          <rect x="34" y="104" width="372" height="96" rx="14" fill="#1c1b19" stroke="#2c2a25" stroke-dasharray="5 5"/>
+          <g fill="#2c2a25">
+            <rect x="60" y="122" width="44" height="54" rx="6" transform="rotate(-8 82 149)"/>
+            <rect x="200" y="118" width="44" height="54" rx="6" transform="rotate(6 222 145)"/>
+            <rect x="330" y="124" width="44" height="54" rx="6" transform="rotate(-4 352 151)"/>
+          </g>
+          <!-- Archivos en vuelo -->
+          <g class="fly" style="--to: translate(-6px, 158px)">
+            <rect x="60" y="122" width="44" height="54" rx="6" fill="#f2f2f2" transform="rotate(-8 82 149)"/>
+            <text x="69" y="155" fill="#0b0b0c" font-size="11" font-weight="700" transform="rotate(-8 82 149)">PDF</text>
+          </g>
+          <g class="fly b" style="--to: translate(-2px, 162px)">
+            <rect x="200" y="118" width="44" height="54" rx="6" fill="#f4e883" transform="rotate(6 222 145)"/>
+            <text x="208" y="151" fill="#0b0b0c" font-size="11" font-weight="700" transform="rotate(6 222 145)">JPG</text>
+          </g>
+          <g class="fly c" style="--to: translate(-4px, 156px)">
+            <rect x="330" y="124" width="44" height="54" rx="6" fill="#a8a49a" transform="rotate(-4 352 151)"/>
+            <text x="338" y="157" fill="#0b0b0c" font-size="11" font-weight="700" transform="rotate(-4 352 151)">MP4</text>
+          </g>
+          <!-- Flechas -->
+          <g stroke="#d2ac47" stroke-width="2" stroke-linecap="round" fill="none" opacity=".7">
+            <path d="M82 212v26M77 232l5 6 5-6"/>
+            <path d="M222 212v26M217 232l5 6 5-6"/>
+            <path d="M352 212v26M347 232l5 6 5-6"/>
+          </g>
+          <!-- Carpetas destino -->
+          <g fill="#1c1b19" stroke="url(#g)" stroke-width="2">
+            <path d="M34 270a8 8 0 0 1 8-8h30l8 8h52a8 8 0 0 1 8 8v74a8 8 0 0 1-8 8H42a8 8 0 0 1-8-8z"/>
+            <path d="M164 270a8 8 0 0 1 8-8h30l8 8h52a8 8 0 0 1 8 8v74a8 8 0 0 1-8 8H172a8 8 0 0 1-8-8z"/>
+            <path d="M294 270a8 8 0 0 1 8-8h30l8 8h52a8 8 0 0 1 8 8v74a8 8 0 0 1-8 8H302a8 8 0 0 1-8-8z"/>
+          </g>
+          <g font-size="12" fill="#f2f2f2">
+            <text x="46" y="300" font-weight="700">Documentos</text>
+            <text x="176" y="300" font-weight="700">Imágenes</text>
+            <text x="306" y="300" font-weight="700">Videos</text>
+          </g>
+          <g font-size="11" fill="#d2ac47" class="count">
+            <text x="46" y="342">2026/11</text>
+            <text x="176" y="342">2026/10</text>
+            <text x="306" y="342">2026/11</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <section id="problema">
+    <div class="wrap">
+      <div class="head center">
+        <span class="label">El problema</span>
+        <h2>¿Tu carpeta de Descargas se ve así?</h2>
+        <p class="lead">Si trabajas con muchos archivos, facturas y clientes, seguro conoces este desorden.</p>
+      </div>
+      <div class="boxes">
+        <div class="box"><span class="k">Descargas (1.284)</span><h3>Carpetas que nadie abre</h3><p>Todo termina mezclado: PDF, fotos, instaladores y videos en el mismo sitio.</p></div>
+        <div class="box"><span class="k">factura_final_v2(3).pdf</span><h3>Horas buscando un archivo</h3><p>Clasificar a mano te quita tiempo que podrías cobrarle a un cliente.</p></div>
+        <div class="box"><span class="k">IVA 19 %</span><h3>Copiar facturas a Excel</h3><p>Pasar proveedor, NIT, IVA y total de cada factura, uno por uno.</p></div>
+        <div class="box"><span class="k">Ctrl + Z</span><h3>Miedo a perder algo</h3><p>Mover o borrar un archivo importante por error, sin forma de volver atrás.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="funciones">
+    <div class="wrap">
+      <div class="head center">
+        <span class="label outline">La solución</span>
+        <h2>Todo lo que hace por ti</h2>
+        <p class="lead">Eliges la carpeta de origen y la de destino. FileSync Pro se encarga del resto.</p>
+      </div>
+      <div class="feats">
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M8 13h8"/></svg></div><div><h3>Organización automática</h3><p>Clasifica por categoría (imágenes, documentos, audio, video, diseño) y por año y mes.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div><div><h3>Análisis previo</h3><p>Cuenta tus archivos por categoría antes de mover nada. No gasta usos.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg></div><div><h3>Lectura de facturas</h3><p>Saca proveedor, número, fecha, NIT, subtotal, IVA y total de PDF e imágenes, y los exporta a CSV.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 9"/></svg></div><div><h3>Detección de recibos</h3><p>Reconoce recibos dentro de tus fotos y los manda a su propia carpeta.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></div><div><h3>Cuarentena de duplicados <span class="pill">Pro</span></h3><p>Compara el contenido, no el nombre. Los repetidos se apartan y se limpian solos a los 30 días.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></div><div><h3>Deshacer <span class="pill">Pro</span></h3><p>Devuelve cada archivo a su lugar si no te gustó la última organización.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg></div><div><h3>Retoma donde quedó</h3><p>Si la app se cierra en plena organización, al abrirla te ofrece continuar.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h7"/><path d="M17 15l2 2 3-4"/></svg></div><div><h3>Filtro por tipo <span class="pill">Pro</span></h3><p>Organiza solo los tipos de archivo que elijas y deja el resto quieto.</p></div></div>
+        <div class="feat"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/></svg></div><div><h3>Tutorial y modo oscuro</h3><p>Pulsa <kbd>F1</kbd> o «Cómo usar» para una guía paso a paso. Cambia entre claro y oscuro.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="facturas">
+    <div class="wrap split">
+      <div class="head" style="margin:0">
+        <span class="label" style="justify-self:start">Para contadores</span>
+        <h2>Tus facturas, en una tabla</h2>
+        <p class="lead">Arrastra una carpeta con facturas en PDF, foto o escaneadas. FileSync Pro lee cada una y te deja los datos listos para exportar a CSV y abrir en Excel.</p>
+        <ul class="checks">
+          <li>Lee PDF digitales y escaneados con OCR incluido, sin instalar nada más</li>
+          <li>Distingue la tarifa del IVA (19 %) del valor del IVA</li>
+          <li>Todo se procesa en tu equipo, sin subir tus facturas a internet</li>
+        </ul>
+      </div>
+      <div class="invoice" role="figure" aria-label="Ejemplo de factura leída por FileSync Pro">
+        <div class="invoice-top"><b>FV-1023.pdf</b><span class="ok">Lectura completa</span></div>
+        <table class="fields">
+          <tbody>
+            <tr><td>Proveedor</td><td>Papelería El Punto SAS</td></tr>
+            <tr><td>NIT</td><td>900.456.123-7</td></tr>
+            <tr><td>Factura n.º</td><td>FV-1023</td></tr>
+            <tr><td>Fecha</td><td>2026-10-14</td></tr>
+            <tr><td>Subtotal</td><td>$116.500</td></tr>
+            <tr><td>IVA 19 %</td><td>$22.135</td></tr>
+            <tr class="total"><td>Total</td><td>$138.635</td></tr>
+          </tbody>
+        </table>
+        <p class="invoice-foot">Factura de ejemplo, con datos inventados.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="demo">
+    <div class="wrap split" style="align-items:start">
+      <div class="head" style="margin:0">
+        <h2>Muy pronto: pruébala gratis</h2>
+        <p class="lead">Cuando FileSync Pro salga oficialmente podrás descargarla y activar la demo: todas las funciones desbloqueadas, sin tarjeta y sin compromiso.</p>
+        <div class="limits">
+          <div><b>50</b><span>archivos organizados</span></div>
+          <div><b>3</b><span>facturas leídas</span></div>
+          <div><b>24 h</b><span>desde que empiezas</span></div>
+        </div>
+        <p class="note">La demo terminará con lo que llegue primero. Se podrá usar una sola vez por equipo y necesitará internet para arrancar.</p>
+      </div>
+      <div class="dl">
+        <h3>Descargas <span class="tag">en pruebas</span></h3>
+        <p><b>Por ahora FileSync Pro está en etapa de pruebas y todavía no se puede descargar.</b></p>
+        <p class="note">¿Quieres saber cuándo sale? Escríbenos y te avisamos apenas esté lista para Windows y Mac.</p>
+        <a class="row" href="https://wa.me/573054139394"><span aria-hidden="true">💬</span><div><b>WhatsApp</b><span>+57 305 413 9394</span></div><i>→</i></a>
+        <div class="row"><span aria-hidden="true">✉️</span><div><b>Correo</b><span style="user-select:all">filesyncpro@gmail.com</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="como">
+    <div class="wrap">
+      <div class="head center">
+        <span class="label">Cómo funciona</span>
+        <h2>Tres pasos y listo</h2>
+        <p class="lead">Sin configuraciones complicadas. La primera organización tarda menos que un café.</p>
+      </div>
+      <div class="steps">
+        <div class="step"><div class="bubble"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></div><h3>Instalar</h3><p>Instala la app en Windows o Mac y actívala con tu código o con la demo.</p></div>
+        <div class="step"><div class="bubble"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><h3>Elegir</h3><p>Escoge la carpeta que quieres ordenar y dónde quieres que quede todo.</p></div>
+        <div class="step"><div class="bubble"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg></div><h3>Organizar</h3><p>Un clic y cada archivo queda en su carpeta, por tipo, año y mes.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="licencias">
+    <div class="wrap">
+      <div class="head center">
+        <span class="label outline">Licencias y precios</span>
+        <h2>Elige tu licencia</h2>
+        <p class="lead">Pago mensual en pesos colombianos, sin permanencia.</p>
+      </div>
+      <div class="plans">
+        <article class="plan">
+          <h3>Básica</h3>
+          <div class="price">$18.900</div>
+          <p class="per">COP / mes</p>
+          <span class="uses">3 usos al mes</span>
+          <p class="desc">Para ordenar tus carpetas de vez en cuando.</p>
+          <ul>
+            <li>Organización por categoría y por fecha</li>
+            <li>Detección de recibos</li>
+            <li>Lectura de facturas</li>
+            <li>Modo oscuro</li>
+          </ul>
+        </article>
+        <article class="plan hl">
+          <span class="label">Más popular</span>
+          <h3>Pro</h3>
+          <div class="price">$33.900</div>
+          <p class="per">COP / mes</p>
+          <span class="uses">10 usos al mes</span>
+          <p class="desc">Para quien organiza archivos todas las semanas.</p>
+          <ul>
+            <li>Todo lo de Básica</li>
+            <li>Cuarentena de duplicados</li>
+            <li>Filtro por tipo de archivo</li>
+            <li>Deshacer la última organización</li>
+          </ul>
+        </article>
+        <article class="plan">
+          <h3>Premium</h3>
+          <div class="price">$59.900</div>
+          <p class="per">COP / mes</p>
+          <span class="uses">Usos ilimitados</span>
+          <p class="desc">Para oficinas y contadores con mucho volumen.</p>
+          <ul>
+            <li>Todo lo de Pro</li>
+            <li>Sin límite de organizaciones ni de facturas</li>
+            <li>Soporte prioritario directo</li>
+          </ul>
+        </article>
+      </div>
+      <div class="packs">
+        <table>
+          <thead><tr><th>Acción</th><th>¿Gasta un uso?</th><th>Detalle</th></tr></thead>
+          <tbody>
+            <tr><td>Organizar una carpeta</td><td class="n">Sí, 1</td><td class="s">Una organización completa, sin importar cuántos archivos tenga</td></tr>
+            <tr><td>Procesar un lote de facturas</td><td class="n">Sí, 1</td><td class="s">Todas las facturas que leas de una vez</td></tr>
+            <tr><td>Analizar un directorio</td><td class="s">No</td><td class="s">Solo cuenta, no mueve nada</td></tr>
+            <tr><td>Deshacer</td><td class="s">No</td><td class="s">Disponible en Pro y Premium</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pay">
+        <p>Estos son los precios de lanzamiento: FileSync Pro todavía no está a la venta.</p>
+        <a class="btn solid" href="https://wa.me/573054139394">Escríbenos por WhatsApp</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="porque">
+    <div class="wrap">
+      <div class="head">
+        <span class="label" style="justify-self:start">¿Por qué FileSync Pro?</span>
+        <h2>Hecho para freelancers y pymes de Latinoamérica</h2>
+      </div>
+      <div class="why">
+        <div><h3>Tus archivos no salen de tu equipo</h3><p>Todo se procesa en tu computador. Solo se verifica tu licencia por internet.</p></div>
+        <div><h3>Precios en pesos, pagos locales</h3><p>Sin tarjeta internacional: pagas con PSE, Nequi o tarjeta a través de Wompi.</p></div>
+        <div><h3>Soporte directo con el desarrollador</h3><p>Hablas con quien creó la app. Sin chatbots y sin intermediarios.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="stats">
+        <div class="stat"><div class="big">0</div><h3>Archivos que mover a mano</h3><p>La app los lleva a su carpeta por ti.</p></div>
+        <div class="stat"><div class="big">100 %</div><h3>Procesamiento local</h3><p>Tus documentos y facturas se quedan en tu equipo.</p></div>
+        <div class="stat"><div class="big">30</div><h3>Días en cuarentena</h3><p>Tiempo para recuperar un duplicado antes de que se borre.</p></div>
+        <div class="stat"><div class="big">1</div><h3>Clic para deshacer</h3><p>Todo vuelve a donde estaba (Pro y Premium).</p></div>
+      </div>
+      <p class="aside">Las licencias no tienen permanencia. Cancela cuando quieras, sin preguntas.</p>
+    </div>
+  </section>
+
+  <section class="close">
+    <div class="wrap">
+      <div class="head center" style="margin:0">
+        <h2>Ordena tu computador hoy.</h2>
+        <p class="lead">Ordena tus archivos con FileSync Pro. Escríbenos y te avisamos apenas esté lista.</p>
+        <div class="cta"><a class="btn solid" href="https://wa.me/573054139394">Avísame cuando salga</a></div>
+      </div>
+      <hr class="divider">
+      <div class="foot">
+        <div><h3>FileSync Pro</h3><p>Una app de S.C.A. Hecha en Colombia para freelancers, contadores, diseñadores y pymes de toda Latinoamérica.</p></div>
+        <div>
+          <h3>Contacto y soporte</h3>
+          <p>¿Tienes preguntas? Escríbenos directamente.</p>
+          <div class="contact">
+            <span>WhatsApp: <a href="https://wa.me/573054139394">+57 305 413 9394</a></span>
+            <span>Correo: <span class="sel">filesyncpro@gmail.com</span></span>
+            <span>Instagram: <a href="https://instagram.com/santicual">@santicual</a></span>
+            <span>Facebook: <a href="https://www.facebook.com/santicual13">@santicual13</a></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer><div class="wrap"><span>© 2026 S.C.A · FileSync Pro</span><span>Hecho en Colombia</span></div></footer>
+</body>
+</html>
