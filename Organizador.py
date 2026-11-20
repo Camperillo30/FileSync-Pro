@@ -30,7 +30,7 @@ hace cada parte (buscar la clase/función por nombre para ir directo):
 - `MakeCodeLicenseClient`: el cliente de licencias que usa la app hoy. El
   cliente escribe su correo y el código de activación que le llegó tras
   pagar en Wompi; el código se canjea contra un webhook de Make, que lo
-  liga a un solo equipo y responde con una firma que la app verifica.
+  liga hasta a 3 equipos y responde con una firma que la app verifica.
   El mismo webhook registra la demo única de cada equipo (`request_demo`).
 - `ModernOrganizadorGUI`: la ventana principal (hereda de `tk.Tk`). Aquí
   vive toda la interfaz: botones, paneles, modo oscuro, el tutorial guiado,
@@ -68,7 +68,7 @@ import webbrowser
 import base64
 import logging
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, simpledialog
+from tkinter import filedialog, scrolledtext
 import tkinter as tk
 from tkinter import ttk
 from urllib import error, request
@@ -628,6 +628,201 @@ if IS_WINDOWS:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except Exception:
         pass
+
+
+# --- Diálogos propios con la paleta de la app -------------------------------------------
+# Los cuadros nativos de Tkinter (`messagebox`, `simpledialog`) no siguen la paleta de la app
+# y algunos traen los botones en inglés ("OK", "Cancel"). `DialogosTema` los reemplaza con
+# la misma interfaz (`showinfo`, `showwarning`, `showerror`, `askyesno`, `askstring`), pero
+# dibujados con ttk y los colores del tema activo (claro u oscuro), y siempre en español.
+# Los selectores de archivos/carpetas (`filedialog`) siguen siendo los del sistema operativo,
+# que en Windows y macOS ya salen en el idioma del sistema.
+
+def aplicar_barra_titulo(ventana, oscuro):
+    """En Windows 10/11 pinta la barra de título de `ventana` en oscuro o claro
+    (atributo DWMWA_USE_IMMERSIVE_DARK_MODE de DWM). En otros sistemas, o si
+    Windows no lo admite, no hace nada."""
+    if not IS_WINDOWS:
+        return
+    try:
+        ventana.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(ventana.winfo_id()) or ventana.winfo_id()
+        valor = ctypes.c_int(1 if oscuro else 0)
+        for atributo in (20, 19):  # 20 en Windows 10 20H1+ y 11; 19 en versiones anteriores.
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, atributo, ctypes.byref(valor), ctypes.sizeof(valor)
+            ) == 0:
+                break
+    except Exception:
+        pass
+
+
+class DialogosTema:
+    """Cuadros de diálogo modales con la paleta de la app, en español.
+
+    La ventana principal registra en `paleta` una función que devuelve el
+    diccionario de colores activo (`TEMA_CLARO` o `TEMA_OSCURO`); si no hay
+    ninguna registrada se usa el tema claro."""
+
+    paleta = None  # Función sin argumentos que devuelve la paleta activa.
+
+    # Ícono de cada tipo de aviso: (símbolo, clave de color en la paleta).
+    _ICONOS = {
+        "info": ("i", "accent"),
+        "warning": ("!", "log_advertencia"),
+        "error": ("✕", "log_error"),
+        "question": ("?", "accent"),
+    }
+
+    @classmethod
+    def _colores(cls):
+        try:
+            return cls.paleta() if cls.paleta else TEMA_CLARO
+        except Exception:
+            return TEMA_CLARO
+
+    @classmethod
+    def _crear_ventana(cls, title, parent):
+        parent = parent or tk._default_root
+        paleta = cls._colores()
+        dialog = tk.Toplevel(parent)
+        dialog.withdraw()
+        dialog.title(title or APP_NAME)
+        dialog.configure(bg=paleta["bg_app"])
+        dialog.resizable(False, False)
+        if parent is not None and parent.winfo_viewable():
+            dialog.transient(parent)
+        aplicar_barra_titulo(dialog, paleta is TEMA_OSCURO)
+        wrapper = ttk.Frame(dialog, padding=(20, 18, 20, 16))
+        wrapper.pack(fill=tk.BOTH, expand=True)
+        return parent, dialog, wrapper, paleta
+
+    @staticmethod
+    def _dibujar_icono(contenedor, tipo, paleta):
+        simbolo, clave = DialogosTema._ICONOS.get(tipo, DialogosTema._ICONOS["info"])
+        lado = _fs(34)
+        icono = tk.Canvas(
+            contenedor, width=lado, height=lado, highlightthickness=0, bd=0, bg=paleta["bg_app"]
+        )
+        icono.create_oval(1, 1, lado - 1, lado - 1, fill=paleta[clave], outline=paleta[clave])
+        icono.create_text(
+            lado / 2, lado / 2, text=simbolo, fill="#ffffff", font=(FONT_UI, _fs(13), "bold")
+        )
+        icono.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 14))
+
+    @staticmethod
+    def _mostrar_modal(parent, dialog, foco):
+        dialog.update_idletasks()
+        ancho, alto = dialog.winfo_reqwidth(), dialog.winfo_reqheight()
+        if parent is not None and parent.winfo_viewable():
+            x = parent.winfo_rootx() + max((parent.winfo_width() - ancho) // 2, 0)
+            y = parent.winfo_rooty() + max((parent.winfo_height() - alto) // 3, 0)
+        else:
+            x = max((dialog.winfo_screenwidth() - ancho) // 2, 0)
+            y = max((dialog.winfo_screenheight() - alto) // 3, 0)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.deiconify()
+        dialog.lift()
+        try:
+            dialog.grab_set()
+        except tk.TclError:
+            pass  # Otra ventana ya tiene el foco exclusivo; el diálogo igual queda encima.
+        foco.focus_set()
+        dialog.wait_window()
+
+    @classmethod
+    def _aviso(cls, tipo, title, message, parent=None, botones=(("Aceptar", True),), **_ignorado):
+        """Muestra un aviso con uno o varios botones y devuelve el valor del
+        botón pulsado (el del último botón si se cierra con la X o Escape)."""
+        parent, dialog, wrapper, paleta = cls._crear_ventana(title, parent)
+        cuerpo = ttk.Frame(wrapper)
+        cuerpo.pack(fill=tk.BOTH, expand=True)
+        cls._dibujar_icono(cuerpo, tipo, paleta)
+        ttk.Label(
+            cuerpo, text=str(message or ""), wraplength=_fs(400), justify=tk.LEFT, font=(FONT_UI, _fs(10))
+        ).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        resultado = {"valor": botones[-1][1]}
+        acciones = ttk.Frame(wrapper)
+        acciones.pack(fill=tk.X, pady=(18, 0))
+
+        def elegir(valor):
+            resultado["valor"] = valor
+            dialog.destroy()
+
+        principal = None
+        # Se empacan de derecha a izquierda: el primer botón (la acción principal) queda a la derecha.
+        for i, (texto, valor) in enumerate(reversed(botones)):
+            es_principal = i == len(botones) - 1
+            boton = ttk.Button(
+                acciones,
+                text=texto,
+                command=lambda v=valor: elegir(v),
+                style="Primary.TButton" if es_principal else "Secondary.TButton",
+            )
+            boton.pack(side=tk.RIGHT, padx=(8, 0))
+            if es_principal:
+                principal = boton
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: elegir(botones[-1][1]))
+        dialog.bind("<Escape>", lambda _: elegir(botones[-1][1]))
+        dialog.bind("<Return>", lambda _: elegir(botones[0][1]))
+        cls._mostrar_modal(parent, dialog, principal)
+        return resultado["valor"]
+
+    @classmethod
+    def showinfo(cls, title=None, message=None, **opciones):
+        cls._aviso("info", title, message, **opciones)
+        return "ok"
+
+    @classmethod
+    def showwarning(cls, title=None, message=None, **opciones):
+        cls._aviso("warning", title, message, **opciones)
+        return "ok"
+
+    @classmethod
+    def showerror(cls, title=None, message=None, **opciones):
+        cls._aviso("error", title, message, **opciones)
+        return "ok"
+
+    @classmethod
+    def askyesno(cls, title=None, message=None, icon="question", **opciones):
+        """Pregunta con botones "Sí" / "No". Devuelve True o False."""
+        tipo = icon if icon in cls._ICONOS else "question"
+        return bool(cls._aviso(tipo, title, message, botones=(("Sí", True), ("No", False)), **opciones))
+
+    @classmethod
+    def askstring(cls, title=None, prompt=None, parent=None, initialvalue="", show=None, **_ignorado):
+        """Pide un texto con botones "Aceptar" / "Cancelar". Devuelve el texto
+        escrito, o None si se cancela (igual que `simpledialog.askstring` de Tkinter)."""
+        parent, dialog, wrapper, paleta = cls._crear_ventana(title, parent)
+        ttk.Label(
+            wrapper, text=str(prompt or ""), wraplength=_fs(420), justify=tk.LEFT, font=(FONT_UI, _fs(10))
+        ).pack(anchor=tk.W, pady=(0, 10))
+        valor = tk.StringVar(value=initialvalue or "")
+        entrada = ttk.Entry(wrapper, textvariable=valor, width=48, show=show or "")
+        entrada.pack(fill=tk.X)
+
+        resultado = {"texto": None}
+        acciones = ttk.Frame(wrapper)
+        acciones.pack(fill=tk.X, pady=(16, 0))
+
+        def aceptar():
+            resultado["texto"] = valor.get()
+            dialog.destroy()
+
+        def cancelar():
+            dialog.destroy()
+
+        ttk.Button(acciones, text="Cancelar", command=cancelar, style="Secondary.TButton").pack(side=tk.RIGHT)
+        ttk.Button(acciones, text="Aceptar", command=aceptar, style="Primary.TButton").pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
+        dialog.protocol("WM_DELETE_WINDOW", cancelar)
+        dialog.bind("<Return>", lambda _: aceptar())
+        dialog.bind("<Escape>", lambda _: cancelar())
+        cls._mostrar_modal(parent, dialog, entrada)
+        return resultado["texto"]
 
 
 class LicensingError(Exception):
@@ -1934,7 +2129,7 @@ class LicenseManager:
         """Identificador estable de este equipo, derivado del sistema
         operativo, el nombre de la máquina y la dirección MAC (`uuid.getnode`),
         reducido a un hash. Se manda a Make al canjear el código (Make liga
-        cada código a un solo equipo) y sirve para detectar si un archivo de
+        cada código hasta a 3 equipos) y sirve para detectar si un archivo de
         licencia fue copiado de otro equipo. La demo y el ejecutable de
         desarrollador usan otro identificador (`get_demo_device_id`).
 
@@ -2495,8 +2690,9 @@ class MakeCodeLicenseClient:
        licencia"). Este cliente calcula `sha256(código|correo)` y lo manda al
        webhook "Canje de codigo" junto con el identificador del equipo y un
        `nonce` aleatorio.
-    3. Make liga el código al primer equipo que lo canjea (un código = un
-       equipo) y responde con los datos de la licencia más una firma
+    3. Make registra el equipo que canjea el código (cada código sirve en
+       hasta `MAX_EQUIPOS` equipos; en el cuarto responde "used") y responde
+       con los datos de la licencia más una firma
        `sha256(código_hash|equipo|nonce|plan|referencia|meses|creado|secreto)`.
        La app verifica esa firma antes de creer la respuesta.
 
@@ -2512,6 +2708,9 @@ class MakeCodeLicenseClient:
     """
 
     PLAN_PREFIX = "fs-"
+    # Equipos en los que se puede activar un mismo código. El límite real lo pone el escenario
+    # "CipherVault - Canje de codigo" de Make; este valor solo se usa en los textos de la app.
+    MAX_EQUIPOS = 3
     SUBSCRIPTION_DAYS = 30  # Días de licencia por cada "mes" pagado.
     RENEWAL_WINDOW_DAYS = 2  # Desde cuántos días antes de vencer se empieza a consultar.
     MIN_RECHECK_HOURS = 12  # Mínimo entre dos consultas automáticas.
@@ -2536,8 +2735,9 @@ class MakeCodeLicenseClient:
             "Revisa que escribiste el mismo correo con el que pagaste en Wompi y que copiaste el código completo."
         ),
         "used": (
-            "Ese código ya está activado en otro equipo.\n\n"
-            "Cada código sirve para un solo equipo. Escríbenos si necesitas cambiarlo de equipo."
+            f"Ese código ya está activado en {MAX_EQUIPOS} equipos, el máximo permitido.\n\n"
+            f"Cada código sirve para hasta {MAX_EQUIPOS} equipos. "
+            "Escríbenos si necesitas cambiar alguno de ellos."
         ),
         "other_app": "Ese código no corresponde a FileSync Pro.",
     }
@@ -2805,6 +3005,8 @@ class ModernOrganizadorGUI(tk.Tk):
         # en disco para recordar la elección la próxima vez que se abra la app.
         self._preferencias = cargar_preferencias()
         self.modo_oscuro = tk.BooleanVar(value=bool(self._preferencias.get("modo_oscuro", False)))
+        # Los avisos y preguntas de la app (DialogosTema) toman los colores del tema activo.
+        DialogosTema.paleta = self._paleta
         self.configure(bg=self._paleta()["bg_app"])
         self.minsize(1040, 680)
         self._configurar_tamano_inicial()
@@ -3153,6 +3355,7 @@ class ModernOrganizadorGUI(tk.Tk):
         dialogo.title("Usos agotados")
         dialogo.resizable(False, False)
         dialogo.configure(bg=self._paleta()["bg_app"])
+        aplicar_barra_titulo(dialogo, self._paleta() is TEMA_OSCURO)
         dialogo.grab_set()
 
         ancho, alto = 420, 240
@@ -3308,6 +3511,7 @@ class ModernOrganizadorGUI(tk.Tk):
         dialog.grab_set()
         dialog.resizable(False, False)
         dialog.configure(bg=paleta["bg_app"])
+        aplicar_barra_titulo(dialog, self._paleta() is TEMA_OSCURO)
 
         email_var = tk.StringVar()
         confirm_var = tk.StringVar()
@@ -3374,6 +3578,7 @@ class ModernOrganizadorGUI(tk.Tk):
         dialog.grab_set()
         dialog.resizable(False, False)
         dialog.configure(bg=self._paleta()["bg_app"])
+        aplicar_barra_titulo(dialog, self._paleta() is TEMA_OSCURO)
 
         selected_plan = tk.StringVar(value=default_plan)
         result = {"plan_code": ""}
@@ -3772,6 +3977,14 @@ class ModernOrganizadorGUI(tk.Tk):
         self.option_add("*TCombobox*Listbox.foreground", paleta["entry_fg"])
         self.option_add("*TCombobox*Listbox.selectBackground", paleta["accent"])
         self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+
+        # Barra de título de Windows en oscuro/claro según el tema (ventana
+        # principal y cualquier ventana emergente que esté abierta).
+        oscuro = paleta is TEMA_OSCURO
+        aplicar_barra_titulo(self, oscuro)
+        for ventana in self.winfo_children():
+            if isinstance(ventana, tk.Toplevel):
+                aplicar_barra_titulo(ventana, oscuro)
 
     def _cambiar_tema(self):
         """Handler del interruptor de modo oscuro del encabezado: aplica la
@@ -4194,7 +4407,7 @@ class ModernOrganizadorGUI(tk.Tk):
             self._mostrar_paso_tutorial()
         except tk.TclError as exc:
             self._cerrar_tutorial()
-            messagebox.showerror(
+            DialogosTema.showerror(
                 "No se pudo abrir el tutorial",
                 f"Ocurrió un problema al mostrar la guía: {exc}",
                 parent=self,
@@ -4305,6 +4518,7 @@ class ModernOrganizadorGUI(tk.Tk):
         overlay.transient(self)
         overlay.resizable(False, False)
         overlay.configure(background=paleta["bg_card"])
+        aplicar_barra_titulo(overlay, self._paleta() is TEMA_OSCURO)
         overlay.protocol("WM_DELETE_WINDOW", self._cerrar_tutorial)
         overlay.bind("<Escape>", lambda _: self._cerrar_tutorial())
 
@@ -4644,7 +4858,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if 4 <= days_left <= 7 and self.license_manager.state.get("subscription_warning_7_for") != expires_at:
             self.license_manager.state["subscription_warning_7_for"] = expires_at
             self.license_manager._save_state()
-            messagebox.showwarning(
+            DialogosTema.showwarning(
                 "Aviso de licencia",
                 f"A la {plan_name} de {email} le quedan {days_left} días.\n\n"
                 "Cuando se cumplan los 30 días sin renovar, se bloquearán las funciones de esa licencia.",
@@ -4654,7 +4868,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if 0 <= days_left <= 3 and self.license_manager.state.get("subscription_warning_3_for") != expires_at:
             self.license_manager.state["subscription_warning_3_for"] = expires_at
             self.license_manager._save_state()
-            messagebox.showwarning(
+            DialogosTema.showwarning(
                 "Aviso de licencia",
                 f"A la {plan_name} de {email} le quedan {days_left} días.\n\n"
                 "Faltan 3 días o menos para que se bloqueen las funciones de esa licencia si no se renueva el pago.",
@@ -4710,7 +4924,7 @@ class ModernOrganizadorGUI(tk.Tk):
                     return
                 self.actualizar_estado_licencia()
                 self._mostrar_avisos_licencia()
-                messagebox.showinfo("Licencia activada", "Tu compra fue confirmada y la app ya quedó desbloqueada.")
+                DialogosTema.showinfo("Licencia activada", "Tu compra fue confirmada y la app ya quedó desbloqueada.")
             return
 
         if state.get("license_key") and state.get("email"):
@@ -4874,7 +5088,7 @@ class ModernOrganizadorGUI(tk.Tk):
             f"Pendientes por revisar: {pendientes}\n\n"
             "¿Deseas continuar desde el último punto guardado?"
         )
-        if not messagebox.askyesno("Continuar organización", mensaje):
+        if not DialogosTema.askyesno("Continuar organización", mensaje):
             self.process_recovery.clear()
             self.log("Se descartó la organización pendiente guardada.", "info")
             return
@@ -4893,14 +5107,14 @@ class ModernOrganizadorGUI(tk.Tk):
         files = files or self.process_recovery.get_manifest_files(state)
         if not files:
             self.process_recovery.clear()
-            messagebox.showwarning("No se pudo reanudar", "No encontramos la lista de archivos de la ejecución pendiente.")
+            DialogosTema.showwarning("No se pudo reanudar", "No encontramos la lista de archivos de la ejecución pendiente.")
             return
 
         snapshot = snapshot or self.process_recovery.rebuild_runtime_state(state)
         next_index = min(snapshot["next_index"], len(files))
         if next_index >= len(files):
             self.process_recovery.clear()
-            messagebox.showinfo("Nada pendiente", "La organización guardada ya no tiene archivos pendientes.")
+            DialogosTema.showinfo("Nada pendiente", "La organización guardada ya no tiene archivos pendientes.")
             return
 
         self._cargar_configuracion_guardada(state)
@@ -4990,7 +5204,7 @@ class ModernOrganizadorGUI(tk.Tk):
                     files.append(path)
         files.sort(key=lambda path: str(path).lower())
         if not files:
-            messagebox.showinfo("Sin facturas", "No se encontraron archivos compatibles en esa carpeta.")
+            DialogosTema.showinfo("Sin facturas", "No se encontraron archivos compatibles en esa carpeta.")
             return
         self._iniciar_extraccion_facturas(files)
 
@@ -5001,7 +5215,7 @@ class ModernOrganizadorGUI(tk.Tk):
         interfaz mientras procesa."""
         supported_paths = [Path(path) for path in paths if self.invoice_extractor.is_supported(path)]
         if not supported_paths:
-            messagebox.showinfo("Sin archivos compatibles", "Selecciona facturas en PDF digital, imagen o texto.")
+            DialogosTema.showinfo("Sin archivos compatibles", "Selecciona facturas en PDF digital, imagen o texto.")
             return
         if not self._asegurar_uso_mensual_disponible():
             return
@@ -5009,7 +5223,7 @@ class ModernOrganizadorGUI(tk.Tk):
         es_demo = self.license_manager.is_demo_active()
         if es_demo:
             quedan = self.license_manager.demo_info()["invoices_left"]
-            if len(supported_paths) > quedan and not messagebox.askyesno(
+            if len(supported_paths) > quedan and not DialogosTema.askyesno(
                 "Demo",
                 f"Seleccionaste {len(supported_paths)} facturas y a tu demo le quedan {quedan}.\n\n"
                 f"Se van a extraer hasta {quedan} factura(s) y las demás no se procesarán. "
@@ -5111,7 +5325,7 @@ class ModernOrganizadorGUI(tk.Tk):
             f"Sin texto o error: {error_count}"
         )
         if not es_demo:
-            messagebox.showinfo("Extraccion finalizada", mensaje)
+            DialogosTema.showinfo("Extraccion finalizada", mensaje)
             return
 
         quedan = self.license_manager.demo_info()["invoices_left"]
@@ -5120,7 +5334,7 @@ class ModernOrganizadorGUI(tk.Tk):
             mensaje += f"\n\nSe alcanzó el límite de la demo: {sin_procesar} factura(s) no se procesaron."
         if quedan > 0:
             mensaje += f"\n\nDemo: te quedan {quedan} factura(s). Las que no se pudieron leer no se descontaron."
-            messagebox.showinfo("Extraccion finalizada", mensaje)
+            DialogosTema.showinfo("Extraccion finalizada", mensaje)
             return
         if self._dialogo_opciones(
             "Extraccion finalizada",
@@ -5135,7 +5349,7 @@ class ModernOrganizadorGUI(tk.Tk):
         CSV que el usuario elige, con codificación `utf-8-sig` (para que
         Excel en Windows lea bien las tildes y la ñ)."""
         if not self.invoice_results:
-            messagebox.showinfo("Sin datos", "Primero extrae informacion de una o varias facturas.")
+            DialogosTema.showinfo("Sin datos", "Primero extrae informacion de una o varias facturas.")
             return
         output_path = filedialog.asksaveasfilename(
             title="Exportar facturas",
@@ -5152,16 +5366,16 @@ class ModernOrganizadorGUI(tk.Tk):
                 for result in self.invoice_results:
                     writer.writerow({field: result.get(field, "") for field in fields})
         except OSError as exc:
-            messagebox.showerror("No se pudo exportar", str(exc))
+            DialogosTema.showerror("No se pudo exportar", str(exc))
             return
         self.log(f"Facturas exportadas a CSV: {output_path}", "exito")
-        messagebox.showinfo("CSV exportado", "La informacion extraida fue exportada correctamente.")
+        DialogosTema.showinfo("CSV exportado", "La informacion extraida fue exportada correctamente.")
 
     def limpiar_facturas_extraidas(self, confirm=True):
         """Vacía la tabla de facturas y la barra de progreso. Pide
         confirmación salvo que `confirm=False` (se usa así internamente,
         por ejemplo antes de empezar una extracción nueva)."""
-        if confirm and self.invoice_results and not messagebox.askyesno("Limpiar facturas", "Deseas limpiar los resultados extraidos?"):
+        if confirm and self.invoice_results and not DialogosTema.askyesno("Limpiar facturas", "Deseas limpiar los resultados extraidos?"):
             return
         self.invoice_results = []
         if self.invoice_tree is not None:
@@ -5190,6 +5404,7 @@ class ModernOrganizadorGUI(tk.Tk):
         dialog.title("Detalle de factura")
         dialog.transient(self)
         dialog.configure(bg=paleta["bg_app"])
+        aplicar_barra_titulo(dialog, self._paleta() is TEMA_OSCURO)
         dialog.geometry(f"760x520+{self.winfo_rootx() + 90}+{self.winfo_rooty() + 70}")
         wrapper = ttk.Frame(dialog, padding=14)
         wrapper.pack(fill=tk.BOTH, expand=True)
@@ -5239,7 +5454,7 @@ class ModernOrganizadorGUI(tk.Tk):
         plan_links = self._plan_links()
         plans = self._sort_plan_codes(plan_links.keys())
         if not plans:
-            messagebox.showerror(
+            DialogosTema.showerror(
                 "Compra no disponible",
                 "La compra no está disponible por el momento.\n\nIntenta nuevamente en unos minutos.",
             )
@@ -5258,7 +5473,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if not plan_code:
             return
         if plan_code not in plan_links:
-            messagebox.showerror(
+            DialogosTema.showerror(
                 "Plan no válido",
                 "Ese plan no está disponible en este momento.",
             )
@@ -5269,7 +5484,7 @@ class ModernOrganizadorGUI(tk.Tk):
         access_mode = self.license_manager.local_unrestricted_access_mode()
         if access_mode == "developer":
             self.log(f"Simulación de compra en modo desarrollador para {email}. Plan {plan_base} ({plan_freq}).", "info")
-            messagebox.showinfo(
+            DialogosTema.showinfo(
                 "Modo desarrollador",
                 f"Prueba local completada.\n\nCorreo: {email}\nPlan: {plan_name} ({plan_freq})\n\nNo se abrirá Wompi ni se realizará un cobro real.",
             )
@@ -5281,7 +5496,7 @@ class ModernOrganizadorGUI(tk.Tk):
         self.log(f"Link de plan local listo para {email}. Plan {plan_code}.", "info")
         if checkout_url:
             webbrowser.open(checkout_url)
-            messagebox.showinfo(
+            DialogosTema.showinfo(
                 "Suscripción iniciada",
                 "Se abrió Wompi en tu navegador.\n\n"
                 "Usa el mismo correo que acabas de escribir para completar tu compra.\n\n"
@@ -5305,7 +5520,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if access_mode == "developer":
             self.actualizar_estado_licencia()
             self.log("Acceso de desarrollador habilitado en este equipo.", "exito")
-            messagebox.showinfo(
+            DialogosTema.showinfo(
                 "Acceso de desarrollador",
                 "Este equipo tiene acceso de desarrollador activo.\n\nLa app funciona sin limitaciones de licencia.",
             )
@@ -5332,7 +5547,7 @@ class ModernOrganizadorGUI(tk.Tk):
                 state["email"], state["license_key"], self.license_manager.get_device_id(), force=True
             )
         except LicensingError as exc:
-            messagebox.showerror("No fue posible validar", str(exc))
+            DialogosTema.showerror("No fue posible validar", str(exc))
             return
 
         if response.get("status") == "active":
@@ -5347,7 +5562,7 @@ class ModernOrganizadorGUI(tk.Tk):
             self._mostrar_avisos_licencia()
             if self.license_manager.is_subscription_expired():
                 self.log("La licencia está vencida.", "advertencia")
-                messagebox.showwarning(
+                DialogosTema.showwarning(
                     "Licencia vencida",
                     "Tu licencia venció y todavía no vemos un pago nuevo.\n\n"
                     "Paga el siguiente mes en Wompi con el mismo correo (no recibirás un código nuevo): "
@@ -5355,7 +5570,7 @@ class ModernOrganizadorGUI(tk.Tk):
                 )
                 return
             self.log("Licencia validada correctamente.", "exito")
-            messagebox.showinfo("Licencia válida", "La licencia sigue activa en este equipo.")
+            DialogosTema.showinfo("Licencia válida", "La licencia sigue activa en este equipo.")
         else:
             pending_email = state.get("subscription_email", "").strip()
             pending_plan_code = state.get("subscription_plan_code", "").strip()
@@ -5365,7 +5580,7 @@ class ModernOrganizadorGUI(tk.Tk):
             self.license_manager.set_validation_status("inactive")
             self.actualizar_estado_licencia()
             self.log("La licencia no fue validada.", "advertencia")
-            messagebox.showwarning("Licencia inválida", response.get("message", "La licencia ya no es válida."))
+            DialogosTema.showwarning("Licencia inválida", response.get("message", "La licencia ya no es válida."))
 
     def _verificar_suscripcion_pendiente(self, email, plan_code):
         """Activa la licencia de `email`. Primero consulta
@@ -5377,7 +5592,7 @@ class ModernOrganizadorGUI(tk.Tk):
         try:
             response = self.api_client.resolve_subscription(email, plan_code)
         except LicensingError as exc:
-            messagebox.showerror("No fue posible verificar", str(exc))
+            DialogosTema.showerror("No fue posible verificar", str(exc))
             return
 
         status = response.get("status", "")
@@ -5393,18 +5608,18 @@ class ModernOrganizadorGUI(tk.Tk):
                     subscription_expires_at=response.get("next_payment_date", ""),
                 )
             except LicensingError as exc:
-                messagebox.showerror("No fue posible activar", str(exc))
+                DialogosTema.showerror("No fue posible activar", str(exc))
                 return
             if not activated:
-                messagebox.showwarning("Licencia no activada", message)
+                DialogosTema.showwarning("Licencia no activada", message)
                 return
             self.actualizar_estado_licencia()
             self._mostrar_avisos_licencia()
-            messagebox.showinfo("Licencia activada", "Tu compra fue confirmada y la app ya quedó desbloqueada.")
+            DialogosTema.showinfo("Licencia activada", "Tu compra fue confirmada y la app ya quedó desbloqueada.")
             return
 
         if status != "activation_required":
-            messagebox.showinfo(
+            DialogosTema.showinfo(
                 "Compra no encontrada todavía",
                 "Todavía no encontramos tu compra confirmada.\n\n"
                 "Si acabas de pagar, espera unos minutos (la sincronización puede tardar un poco) "
@@ -5412,10 +5627,10 @@ class ModernOrganizadorGUI(tk.Tk):
             )
             return
 
-        activation_code = simpledialog.askstring(
+        activation_code = DialogosTema.askstring(
             "Activar licencia",
             "Pega el código de activación que te enviamos por correo tras confirmar tu pago.\n\n"
-            "Sirve para un solo equipo.",
+            f"Puedes usarlo en hasta {MakeCodeLicenseClient.MAX_EQUIPOS} equipos.",
             parent=self,
         )
         if not activation_code:
@@ -5423,14 +5638,14 @@ class ModernOrganizadorGUI(tk.Tk):
         try:
             activated, message = self._registrar_licencia_confirmada(email, activation_code)
         except LicensingError as exc:
-            messagebox.showerror("No fue posible activar", str(exc))
+            DialogosTema.showerror("No fue posible activar", str(exc))
             return
         if not activated:
-            messagebox.showwarning("Licencia no activada", message)
+            DialogosTema.showwarning("Licencia no activada", message)
             return
         self.actualizar_estado_licencia()
         self._mostrar_avisos_licencia()
-        messagebox.showinfo("Licencia activada", "La licencia fue activada correctamente en este equipo.")
+        DialogosTema.showinfo("Licencia activada", "La licencia fue activada correctamente en este equipo.")
 
     def _asegurar_acceso(self):
         """Comprobación de guardia usada al inicio de las acciones que
@@ -5513,6 +5728,7 @@ class ModernOrganizadorGUI(tk.Tk):
         dialogo.title(titulo_ventana)
         dialogo.resizable(False, False)
         dialogo.configure(bg=self._paleta()["bg_app"])
+        aplicar_barra_titulo(dialogo, self._paleta() is TEMA_OSCURO)
         dialogo.transient(self)
 
         frame = ttk.Frame(dialogo, padding=24)
@@ -5547,14 +5763,14 @@ class ModernOrganizadorGUI(tk.Tk):
         única vez) y, si este equipo nunca la usó, desbloquea todas las funciones con
         el tope de archivos y facturas de la demo. Devuelve True si quedó activa."""
         if self.license_manager.is_feature_unlocked():
-            messagebox.showinfo("Demo", "Ya tienes una licencia activa: todas las funciones de tu licencia están disponibles.")
+            DialogosTema.showinfo("Demo", "Ya tienes una licencia activa: todas las funciones de tu licencia están disponibles.")
             return False
         if self.license_manager.is_demo_active():
             return True
         if not self.license_manager.demo_disponible():
-            messagebox.showinfo("Demo", "Ya usaste la demo gratis en este equipo.\n\nCompra una licencia para seguir usando la app.")
+            DialogosTema.showinfo("Demo", "Ya usaste la demo gratis en este equipo.\n\nCompra una licencia para seguir usando la app.")
             return False
-        if preguntar and not messagebox.askyesno(
+        if preguntar and not DialogosTema.askyesno(
             "Probar demo gratis",
             f"La demo desbloquea TODAS las funciones de FileSync Pro una sola vez en este equipo, "
             f"durante {DEMO_DURACION_HORAS} horas desde que la empiezas:\n\n"
@@ -5570,7 +5786,7 @@ class ModernOrganizadorGUI(tk.Tk):
         try:
             estado = self.api_client.request_demo(self.license_manager.get_demo_device_id())
         except LicensingError as exc:
-            messagebox.showwarning("No se pudo iniciar la demo", str(exc))
+            DialogosTema.showwarning("No se pudo iniciar la demo", str(exc))
             return False
         finally:
             self.config(cursor="")
@@ -5578,7 +5794,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if estado == "used":
             self.license_manager.mark_demo_used()
             self.actualizar_estado_licencia()
-            messagebox.showinfo(
+            DialogosTema.showinfo(
                 "Demo ya usada",
                 "Este equipo ya usó la demo gratis de FileSync Pro.\n\nCompra una licencia para seguir usando la app.",
             )
@@ -5591,7 +5807,7 @@ class ModernOrganizadorGUI(tk.Tk):
             f"{DEMO_ARCHIVOS} archivos y {DEMO_FACTURAS} facturas.",
             "exito",
         )
-        messagebox.showinfo(
+        DialogosTema.showinfo(
             "Demo activada",
             "¡Listo! Todas las funciones están desbloqueadas.\n\n"
             f"Durante las próximas {DEMO_DURACION_HORAS} horas puedes organizar hasta {DEMO_ARCHIVOS} archivos "
@@ -5606,7 +5822,7 @@ class ModernOrganizadorGUI(tk.Tk):
         registro. Sirve para revisar antes de organizar de verdad."""
         origen = self.directorio_origen.get()
         if not origen or not os.path.exists(origen):
-            messagebox.showwarning("Directorio inválido", "Selecciona un directorio de origen válido.")
+            DialogosTema.showwarning("Directorio inválido", "Selecciona un directorio de origen válido.")
             return
 
         self.log("Analizando directorio...", "info")
@@ -5663,19 +5879,19 @@ class ModernOrganizadorGUI(tk.Tk):
         destino = self.directorio_destino.get()
         extension_filtrada = self.tipo_archivo_seleccionado.get().lower()
         if not origen or not os.path.exists(origen):
-            messagebox.showerror("Error", "Selecciona un directorio de origen válido.")
+            DialogosTema.showerror("Error", "Selecciona un directorio de origen válido.")
             return
         if not destino:
-            messagebox.showerror("Error", "Selecciona un directorio de destino.")
+            DialogosTema.showerror("Error", "Selecciona un directorio de destino.")
             return
         try:
             origen_path, destino_path = validate_source_destination(origen, destino)
         except PathSafetyError as exc:
-            messagebox.showerror("Rutas no seguras", str(exc))
+            DialogosTema.showerror("Rutas no seguras", str(exc))
             return
         origen, destino = str(origen_path), str(destino_path)
         if not self.organizar_todos.get() and not self.tipo_archivo_seleccionado.get():
-            messagebox.showerror("Error", "Selecciona una extensión para filtrar.")
+            DialogosTema.showerror("Error", "Selecciona una extensión para filtrar.")
             return
 
         plan_code = self._plan_code_activo()
@@ -5685,7 +5901,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if not self._asegurar_uso_mensual_disponible():
             return
         if archivos_elegibles <= 0:
-            messagebox.showinfo("Sin archivos", "No se encontraron archivos compatibles con la seleccion actual.")
+            DialogosTema.showinfo("Sin archivos", "No se encontraron archivos compatibles con la seleccion actual.")
             return
         self._current_run_limit = None
 
@@ -5727,7 +5943,7 @@ class ModernOrganizadorGUI(tk.Tk):
         else:
             resumen.append(f"Usos mensuales restantes: {usage_info['remaining']} de {usage_info['limit']}")
             resumen.append("Esta organizacion consumira 1 uso.")
-        if not messagebox.askyesno("Confirmar organización", "\n".join(resumen)):
+        if not DialogosTema.askyesno("Confirmar organización", "\n".join(resumen)):
             self._current_run_limit = None
             return
 
@@ -6090,14 +6306,14 @@ class ModernOrganizadorGUI(tk.Tk):
         borra DEFINITIVAMENTE (no van a la Papelera de Windows ni de macOS). El borrado
         corre en un hilo aparte para no congelar la ventana si hay muchos."""
         if self._run_in_progress:
-            messagebox.showinfo("Proceso en curso", "Espera a que termine la organización antes de vaciar la cuarentena.")
+            DialogosTema.showinfo("Proceso en curso", "Espera a que termine la organización antes de vaciar la cuarentena.")
             return
         raiz = self._carpeta_cuarentena()
         cantidad, tamano = quarantine_summary(raiz)
         if cantidad == 0:
-            messagebox.showinfo("Cuarentena vacía", "No hay duplicados en la cuarentena.")
+            DialogosTema.showinfo("Cuarentena vacía", "No hay duplicados en la cuarentena.")
             return
-        confirmar = messagebox.askyesno(
+        confirmar = DialogosTema.askyesno(
             "Vaciar cuarentena",
             f"La cuarentena tiene {cantidad} archivo(s) ({self._formatear_bytes(tamano)}).\n\n"
             "Se van a borrar DEFINITIVAMENTE: no van a la papelera y después no se podrán "
@@ -6129,13 +6345,13 @@ class ModernOrganizadorGUI(tk.Tk):
         self.actualizar_estado_licencia()
         if error:
             self.log(f"No se pudo vaciar la cuarentena: {error}", "error")
-            messagebox.showerror("Vaciar cuarentena", f"No se pudo vaciar la cuarentena:\n{error}")
+            DialogosTema.showerror("Vaciar cuarentena", f"No se pudo vaciar la cuarentena:\n{error}")
             return
         self.log(
             f"Cuarentena vaciada: {borrados} archivo(s) borrados, {self._formatear_bytes(liberados)} liberados.",
             "exito",
         )
-        messagebox.showinfo(
+        DialogosTema.showinfo(
             "Cuarentena vaciada",
             f"Se borraron {borrados} archivo(s) y se liberaron {self._formatear_bytes(liberados)}.",
         )
@@ -6268,7 +6484,7 @@ class ModernOrganizadorGUI(tk.Tk):
             resto = len(archivos_vacios) - 5
             if resto > 0:
                 ejemplos += f"\n... y {resto} más (revisa el registro de actividad)."
-            messagebox.showwarning(
+            DialogosTema.showwarning(
                 "Archivos vacíos encontrados",
                 f"Se encontraron {len(archivos_vacios)} archivo(s) vacíos: miden 0 bytes y no tienen "
                 "ningún contenido.\n\n"
@@ -6296,7 +6512,7 @@ class ModernOrganizadorGUI(tk.Tk):
         # Una organización hecha con la demo SIEMPRE se puede deshacer, aunque la demo
         # ya haya terminado y no haya licencia.
         if not features.get("undo_organization", False) and not self._ultima_corrida_es_demo():
-            messagebox.showinfo(
+            DialogosTema.showinfo(
                 "Función no disponible",
                 "Deshacer una organización solo está disponible con las licencias Pro y Premium.",
             )
@@ -6304,18 +6520,18 @@ class ModernOrganizadorGUI(tk.Tk):
 
         resumen = self.process_recovery.get_last_run_summary()
         if not resumen:
-            messagebox.showinfo("Nada que deshacer", "No hay ninguna organización reciente para deshacer.")
+            DialogosTema.showinfo("Nada que deshacer", "No hay ninguna organización reciente para deshacer.")
             return
         if resumen.get("deshecho"):
-            messagebox.showinfo("Ya deshecho", "La última organización ya fue deshecha anteriormente.")
+            DialogosTema.showinfo("Ya deshecho", "La última organización ya fue deshecha anteriormente.")
             return
 
         entries = self.process_recovery.get_last_run_journal_entries()
         if not entries:
-            messagebox.showinfo("Nada que deshacer", "No se encontró información de la última organización.")
+            DialogosTema.showinfo("Nada que deshacer", "No se encontró información de la última organización.")
             return
 
-        confirmar = messagebox.askyesno(
+        confirmar = DialogosTema.askyesno(
             "Deshacer última organización",
             "Esto va a devolver los archivos movidos a su carpeta de origen, restaurar los "
             "duplicados que están en la cuarentena de la app y eliminar las copias creadas por "
@@ -6403,7 +6619,7 @@ class ModernOrganizadorGUI(tk.Tk):
         if errores:
             mensaje += f"\n{errores} archivo(s) tuvieron un error al deshacer."
 
-        messagebox.showinfo("Deshacer completado", mensaje)
+        DialogosTema.showinfo("Deshacer completado", mensaje)
         self.actualizar_estado_licencia()
 
     def _cambiar_estado_botones(self, estado):
@@ -6430,7 +6646,7 @@ class ModernOrganizadorGUI(tk.Tk):
         continuar la próxima vez antes de cerrar (el progreso ya está
         guardado en disco por `ProcessRecoveryManager`)."""
         if self._run_in_progress:
-            if messagebox.askyesno(
+            if DialogosTema.askyesno(
                 "Salir",
                 "Hay una organización en curso.\n\nSi cierras ahora, la app guardará el avance y te preguntará al volver a abrir si deseas continuar.\n\n¿Deseas salir?",
             ):
@@ -6438,7 +6654,7 @@ class ModernOrganizadorGUI(tk.Tk):
                 self.destroy()
                 return
             return
-        if messagebox.askyesno("Salir", "¿Deseas cerrar la aplicación?"):
+        if DialogosTema.askyesno("Salir", "¿Deseas cerrar la aplicación?"):
             self.destroy()
 
 

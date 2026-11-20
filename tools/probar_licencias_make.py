@@ -4,7 +4,7 @@ Qué hace, en orden:
 1. Simula un pago APROBADO de Wompi (firmado con tu secreto de eventos) hacia el webhook de pagos de Make.
    Make crea la licencia y te manda un correo con el código.
 2. Te pide ese código y lo canjea en un "equipo A" (debe salir bien y la firma debe verificar).
-3. Intenta canjearlo en un "equipo B" (debe rechazarse: un código = un equipo).
+3. Lo canjea en los "equipos B y C" (deben salir bien) y en un "equipo D" (debe rechazarse: máximo 3 equipos).
 4. Simula un SEGUNDO pago del mismo correo (renovación) y vuelve a consultar: la fecha debe avanzar y NO
    debe llegar un código nuevo.
 5. Imprime las llaves de prueba que quedan en el data store de Make para que las borres.
@@ -107,7 +107,7 @@ def main():
         sys.exit("Faltan FILESYNC_PRO_PAYMENT_HOOK_URL y/o FILESYNC_PRO_LICENSE_REDEEM_URL en el entorno (ver el inicio del archivo).")
 
     email = args.email.strip().lower()
-    machine_a, machine_b = "A" * 8 + uuid.uuid4().hex, "B" * 8 + uuid.uuid4().hex
+    machine_a, machine_b, machine_c, machine_d = (letra * 8 + uuid.uuid4().hex for letra in "ABCD")
 
     print("1) Pago simulado (cliente nuevo)")
     ref1 = send_payment(email, args.plan, events_secret)
@@ -120,10 +120,14 @@ def main():
     assert data.get("ok") and data.get("firma_ok") and str(data["plan"]).startswith("fs-"), "El canje debía salir bien"
     first_created = data["created_at"]
 
-    print("3) Mismo código en el equipo B (debe rechazarse)")
-    data_b, _ = redeem(email, code, machine_b, signing_secret)
-    print("  ", data_b)
-    assert not data_b.get("ok") and data_b.get("error") == "used", "El equipo B debía ser rechazado"
+    print("3) Mismo código en los equipos B y C (deben salir bien) y en el D (debe rechazarse)")
+    for nombre, maquina in (("B", machine_b), ("C", machine_c)):
+        data_x, _ = redeem(email, code, maquina, signing_secret)
+        print(f"   {nombre}:", {k: v for k, v in data_x.items() if k != "sig"})
+        assert data_x.get("ok") and data_x.get("firma_ok"), f"El equipo {nombre} debía ser aceptado"
+    data_d, _ = redeem(email, code, machine_d, signing_secret)
+    print("   D:", data_d)
+    assert not data_d.get("ok") and data_d.get("error") == "used", "El equipo D debía ser rechazado"
 
     print("4) Segundo pago del mismo correo (renovación)")
     time.sleep(2)

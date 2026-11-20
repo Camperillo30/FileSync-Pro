@@ -129,7 +129,7 @@ No distribuyas ni subas a git: `.env`, `desktop_runtime_config.json` ni `desktop
 
 ## Licencias
 
-Flujo de compra: la app abre el link de pago de **Wompi** de la licencia elegida. Wompi avisa a un escenario de **Make**, que verifica la firma del evento, genera un **código de activación aleatorio**, guarda solo su hash y lo envía por correo. El cliente pega el código en «Verificar licencia». La app lo canjea en otro webhook de Make, que liga el código al primer equipo que lo usa y devuelve la licencia **firmada**, y la app verifica esa firma. **Un código sirve para un solo equipo.** Cada pago nuevo del mismo correo extiende la licencia 30 días, sin código nuevo.
+Flujo de compra: la app abre el link de pago de **Wompi** de la licencia elegida. Wompi avisa a un escenario de **Make**, que verifica la firma del evento, genera un **código de activación aleatorio**, guarda solo su hash y lo envía por correo. El cliente pega el código en «Verificar licencia». La app lo canjea en otro webhook de Make, que registra el equipo que lo usa y devuelve la licencia **firmada**, y la app verifica esa firma. **Un código sirve en hasta 3 equipos.** Cada pago nuevo del mismo correo extiende la licencia 30 días, sin código nuevo.
 
 | Licencia | Precio mensual (COP) | Funciones | Usos al mes |
 | --- | --- | --- | --- |

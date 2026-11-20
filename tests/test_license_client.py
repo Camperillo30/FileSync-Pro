@@ -1,6 +1,6 @@
 # Pruebas del cliente de licencias por código (`MakeCodeLicenseClient` en Organizador.py).
 # Levantan un servidor HTTP local que imita el escenario "CipherVault - Canje de codigo" de Make
-# (mismo contrato: hash del código, un código = un equipo, respuesta firmada con sha256).
+# (mismo contrato: hash del código, hasta 3 equipos por código, respuesta firmada con sha256).
 import datetime as dt
 import hashlib
 import json
@@ -15,6 +15,9 @@ CODE = "ABCD1234EFGH5678"
 CODE_SHOWN = "abcd-1234-efgh-5678"  # Como lo copia el cliente del correo.
 MACHINE_A = "a" * 64
 MACHINE_B = "b" * 64
+MACHINE_C = "c" * 64
+MACHINE_D = "d" * 64
+MAX_EQUIPOS = 3
 
 
 def _hash(code, email):
@@ -42,10 +45,11 @@ class FakeMake:
         record = self.store.get(key)
         if record is None or not machine:
             return {"ok": False, "error": "invalid"}
-        if record["machine"] == "":
-            record["machine"] = machine
-        elif record["machine"] != machine:
-            return {"ok": False, "error": "used"}
+        equipos = [m for m in record["machine"].split(",") if m]
+        if machine not in equipos:
+            if len(equipos) >= MAX_EQUIPOS:
+                return {"ok": False, "error": "used"}
+            record["machine"] = ",".join(equipos + [machine])
         fields = [key, machine, nonce, record["plan"], record["reference"], str(record["meses"]), record["created_at"]]
         sig = hashlib.sha256(("|".join(fields) + "|" + SECRET).encode()).hexdigest()
         if self.tamper_signature:
@@ -116,13 +120,18 @@ def test_email_is_case_and_space_insensitive(licenses, make):
     assert _client(licenses, make).activate_license("  Cliente@Example.COM ", CODE, MACHINE_A)["status"] == "active"
 
 
-def test_same_machine_can_revalidate_but_other_machine_cannot(licenses, make):
+def test_code_works_on_three_machines_but_not_a_fourth(licenses, make):
     client = _client(licenses, make)
     assert client.activate_license(EMAIL, CODE, MACHINE_A)["status"] == "active"
     assert client.validate_license(EMAIL, CODE, MACHINE_A, force=True)["status"] == "active"
-    other = client.activate_license(EMAIL, CODE, MACHINE_B)
-    assert other["status"] == "inactive"
-    assert "otro equipo" in other["message"]
+    assert client.activate_license(EMAIL, CODE, MACHINE_B)["status"] == "active"
+    assert client.activate_license(EMAIL, CODE, MACHINE_C)["status"] == "active"
+    # Un equipo ya registrado sigue validando aunque el código esté lleno.
+    assert client.validate_license(EMAIL, CODE, MACHINE_B, force=True)["status"] == "active"
+    fourth = client.activate_license(EMAIL, CODE, MACHINE_D)
+    assert fourth["status"] == "inactive"
+    assert "3 equipos" in fourth["message"]
+    assert licenses.MakeCodeLicenseClient.MAX_EQUIPOS == MAX_EQUIPOS
 
 
 def test_wrong_email_or_wrong_code_is_invalid(licenses, make):
