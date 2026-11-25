@@ -17,4 +17,7 @@ La app incluye una **demo gratis** de 24 horas. Para seguir usándola, compra un
 
 ### Novedades
 
-- (escribe aquí los cambios de esta versión)
+- Cada código de activación sirve en hasta 3 equipos (antes, uno).
+- Todos los diálogos están en español y con la paleta de la app.
+- Los textos de la app hablan de "licencias" (Básica, Pro y Premium).
+- Se quitó código viejo del sistema de licencias.

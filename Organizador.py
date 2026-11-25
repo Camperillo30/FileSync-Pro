@@ -397,7 +397,7 @@ def load_json_object_env(name: str):
 # --- Constantes globales de la app (nombre, planes, precios, regex, etc.) ---
 
 APP_NAME = "FileSync Pro"
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 APP_AUTHOR = "S.C.A"
 LOGGER = logging.getLogger("filesync_pro")
 APP_ID = "miempresa.filesyncpro.desktop"
@@ -3376,8 +3376,8 @@ class ModernOrganizadorGUI(tk.Tk):
         ttk.Label(
             frame,
             text=(
-                f"Tu plan {plan_name} ya usó los {usage_info['limit']} usos disponibles este mes.\n\n"
-                "¿Quieres renovar tu plan actual o cambiar a uno con más usos?"
+                f"Tu licencia {plan_name} ya usó los {usage_info['limit']} usos disponibles este mes.\n\n"
+                "¿Quieres renovar tu licencia actual o cambiar a una con más usos?"
             ),
             wraplength=370,
             justify="left",
@@ -3398,7 +3398,7 @@ class ModernOrganizadorGUI(tk.Tk):
             dialogo.destroy()
 
         ttk.Button(btn_frame, text=f"Renovar {plan_name}", command=_renovar, style="Accent.TButton").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(btn_frame, text="Ver otros planes", command=_cambiar).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_frame, text="Ver otras licencias", command=_cambiar).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_frame, text="Cancelar", command=_cancelar).pack(side=tk.RIGHT)
 
     def _iniciar_compra_plan(self, plan_code):
@@ -3413,7 +3413,7 @@ class ModernOrganizadorGUI(tk.Tk):
             return
         email = self._pedir_correo_confirmado(
             "Renovar licencia",
-            f"Escribe el correo con el que quieres renovar el plan {self._nombre_plan(plan_code)}.",
+            f"Escribe el correo con el que quieres renovar la licencia {self._nombre_plan(plan_code)}.",
         )
         if not email:
             return
@@ -3421,7 +3421,7 @@ class ModernOrganizadorGUI(tk.Tk):
         plan_base, _ = self._dividir_plan_frecuencia(clave)
         self.license_manager.remember_pending_subscription(email, plan_base)
         self.actualizar_estado_licencia()
-        self.log(f"Link de plan local listo para {email}. Plan {clave}.", "info")
+        self.log(f"Link de pago listo para {email}. Licencia {clave}.", "info")
         webbrowser.open(checkout_url)
 
     def _registrar_uso_mensual(self, etiqueta_uso):
@@ -3573,7 +3573,7 @@ class ModernOrganizadorGUI(tk.Tk):
         el usuario elija qué quiere comprar. Devuelve el código elegido, o
         cadena vacía si se canceló."""
         dialog = tk.Toplevel(self)
-        dialog.title("Elegir plan")
+        dialog.title("Elegir licencia")
         dialog.transient(self)
         dialog.grab_set()
         dialog.resizable(False, False)
@@ -3596,7 +3596,7 @@ class ModernOrganizadorGUI(tk.Tk):
 
         ttk.Label(
             wrapper,
-            text="Selecciona el plan que quieres pagar:",
+            text="Selecciona la licencia que quieres pagar:",
             font=(FONT_UI, _fs(10), "bold"),
         ).pack(anchor=tk.W, pady=(0, 10))
 
@@ -4261,7 +4261,7 @@ class ModernOrganizadorGUI(tk.Tk):
         checkout_frame.pack(fill=tk.X, pady=(0, 14))
         ttk.Label(
             checkout_frame,
-            text="Selecciona el plan que prefieras y completa tu compra para desbloquear la app.",
+            text="Selecciona la licencia que prefieras y completa tu compra para desbloquear la app.",
             wraplength=620,
             justify=tk.LEFT,
         ).pack(anchor=tk.W)
@@ -4763,7 +4763,7 @@ class ModernOrganizadorGUI(tk.Tk):
                 f"y {demo['invoices_left']} de {DEMO_FACTURAS} facturas | {self._texto_tiempo_demo(demo)}"
             )
         elif state.get("subscription_email"):
-            text = f"Compra en proceso | Plan {self._nombre_plan(self._plan_code_activo())}"
+            text = f"Compra en proceso | Licencia {self._nombre_plan(self._plan_code_activo())}"
         elif self.license_manager.demo_info()["status"] == "exhausted":
             text = "Tu demo terminó | Compra una licencia para seguir usando la app"
             if (
@@ -5474,8 +5474,8 @@ class ModernOrganizadorGUI(tk.Tk):
             return
         if plan_code not in plan_links:
             DialogosTema.showerror(
-                "Plan no válido",
-                "Ese plan no está disponible en este momento.",
+                "Licencia no válida",
+                "Esa licencia no está disponible en este momento.",
             )
             return
 
@@ -5483,7 +5483,7 @@ class ModernOrganizadorGUI(tk.Tk):
         plan_name = self._nombre_plan(plan_base)
         access_mode = self.license_manager.local_unrestricted_access_mode()
         if access_mode == "developer":
-            self.log(f"Simulación de compra en modo desarrollador para {email}. Plan {plan_base} ({plan_freq}).", "info")
+            self.log(f"Simulación de compra en modo desarrollador para {email}. Licencia {plan_base} ({plan_freq}).", "info")
             DialogosTema.showinfo(
                 "Modo desarrollador",
                 f"Prueba local completada.\n\nCorreo: {email}\nPlan: {plan_name} ({plan_freq})\n\nNo se abrirá Wompi ni se realizará un cobro real.",
@@ -5493,7 +5493,7 @@ class ModernOrganizadorGUI(tk.Tk):
         checkout_url = plan_links[plan_code]
         self.license_manager.remember_pending_subscription(email, plan_base)
         self.actualizar_estado_licencia()
-        self.log(f"Link de plan local listo para {email}. Plan {plan_code}.", "info")
+        self.log(f"Link de pago listo para {email}. Licencia {plan_code}.", "info")
         if checkout_url:
             webbrowser.open(checkout_url)
             DialogosTema.showinfo(
@@ -6438,7 +6438,7 @@ class ModernOrganizadorGUI(tk.Tk):
             self.log("Usos mensuales: ilimitados", "info")
         else:
             self.log(
-                f"Usos mensuales restantes del plan {self._nombre_plan(plan_code)}: {usage_info['remaining']} de {usage_info['limit']}.",
+                f"Usos mensuales restantes de la licencia {self._nombre_plan(plan_code)}: {usage_info['remaining']} de {usage_info['limit']}.",
                 "info",
             )
         self.process_recovery.mark_completed(
