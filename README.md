@@ -14,7 +14,13 @@
 
 ## Descargar
 
-**Por ahora FileSync Pro está en etapa de pruebas y todavía no se puede descargar.** Cuando salga la versión estable, aquí estarán los instaladores para Windows 10/11 y para Mac (Apple Silicon e Intel). ¿Quieres saber cuándo sale? Escribe por [WhatsApp](https://wa.me/573054139394) o a `filesyncpro@gmail.com`.
+| Sistema | Descarga |
+| --- | --- |
+| Windows 10 u 11 (instalador) | [`FileSync-Pro-Setup.exe`](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-Setup.exe) |
+| Mac con Apple Silicon (M1 o posterior) | [`FileSync-Pro-macOS-AppleSilicon.dmg`](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-AppleSilicon.dmg) |
+| Mac con Intel | [`FileSync-Pro-macOS-Intel.dmg`](https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/FileSync-Pro-macOS-Intel.dmg) |
+
+La app todavía no tiene firma de código: en Windows, si aparece SmartScreen, haz clic en **Más información** → **Ejecutar de todas formas**; en Mac, aprueba el primer arranque en *Ajustes del Sistema > Privacidad y seguridad > Abrir igualmente*. ¿Dudas? Escribe por [WhatsApp](https://wa.me/573054139394) o a `filesyncpro@gmail.com`.
 
 > [!CAUTION]
 > **FileSync Pro está en beta.** Puede tener errores, cambiar sin aviso o mover archivos de forma inesperada. Pruébala primero con copias, no la uses sobre carpetas importantes sin respaldo ni la instales en equipos de trabajo hasta que salga la versión estable.
