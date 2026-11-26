@@ -22,9 +22,6 @@
 
 La app todavía no tiene firma de código: en Windows, si aparece SmartScreen, haz clic en **Más información** → **Ejecutar de todas formas**; en Mac, aprueba el primer arranque en *Ajustes del Sistema > Privacidad y seguridad > Abrir igualmente*. ¿Dudas? Escribe por [WhatsApp](https://wa.me/573054139394) o a `filesyncpro@gmail.com`.
 
-> [!CAUTION]
-> **FileSync Pro está en beta.** Puede tener errores, cambiar sin aviso o mover archivos de forma inesperada. Pruébala primero con copias, no la uses sobre carpetas importantes sin respaldo ni la instales en equipos de trabajo hasta que salga la versión estable.
-
 ## Funciones
 
 - **Organización automática.** Clasifica por categoría (documentos, imágenes, video, audio, código, comprimidos...) y por año y mes. En las fotos usa la fecha EXIF cuando existe. Se puede usar la misma carpeta como origen y destino.
@@ -97,7 +94,7 @@ Para comprobar el OCR de un ejecutable ya compilado: `--ocr-selftest` (debe term
 
 ### Publicar una versión
 
-Cuando haya versión estable, los enlaces de *Descargar* pueden apuntar a `https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/<archivo>`, que siempre lleva a la última versión publicada (las *pre-release* no cuentan como "última"). Los nombres de archivo son fijos: `FileSync-Pro-Setup.exe`, `FileSync-Pro-macOS-AppleSilicon.dmg` y `FileSync-Pro-macOS-Intel.dmg`.
+Los enlaces de *Descargar* apuntan a `https://github.com/Camperillo30/FileSync-Pro/releases/latest/download/<archivo>`, que siempre lleva a la última versión publicada (las *pre-release* no cuentan como "última"). Los nombres de archivo son fijos: `FileSync-Pro-Setup.exe`, `FileSync-Pro-macOS-AppleSilicon.dmg` y `FileSync-Pro-macOS-Intel.dmg`.
 
 1. Sube `APP_VERSION` en `Organizador.py` (por ejemplo a `3.2.0`) y haz *Commit and Push* en PyCharm.
 2. Crea la etiqueta en PyCharm (*Git > New Tag*): `v3.2.0` para una versión definitiva, o `v3.2.0-beta` (con guion) para una pre-release.
